@@ -1,6 +1,7 @@
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Polygon
+from matplotlib.legend_handler import HandlerPatch
 
 def find_contour_envelope(binary_mask):
     """
@@ -184,7 +185,8 @@ def create_pixel_boundary_envelope(cluster_pixels):
 
 def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_size=20,
                          custom_color=None, show_background=False, despine=True,
-                         time_bins=None, show_scale=False, cmap=None):
+                         time_bins=None, show_scale=False, cmap=None,
+                         show_labels=True, show_legend=False):
     """
     Clean publication-ready plot of pixel hit time development with envelope contours.
     
@@ -201,6 +203,8 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
                or None for default [10, 20, 30, 40]
     show_scale: whether to display a scale with pixel range at the bottom (default False)
     cmap: matplotlib colormap name or object for coloring timestamped pixels (default None for grayscale)
+    show_labels: whether to display timestamp text labels on pixels (default True)
+    show_legend: whether to display a legend with timestamp colors (default False)
     
     Returns:
     Tuple of (fig, ax)
@@ -258,6 +262,8 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
         for bin_info in time_bins:
             bin_info['face_color'] = custom_color
 
+    # Collect legend handles
+    legend_patches = []
     for i, bin_info in enumerate(time_bins):
         hist_data = h[keys[start_key_idx + i]] if start_key_idx + i < len(keys) else np.zeros_like(h[keys[0]])
         zoom_hist = hist_data[y_min:y_max, x_min:x_max]
@@ -282,13 +288,19 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
                                 alpha=bin_info['alpha'])
                 ax.add_patch(polygon)
             
-            for x, y in cluster:
-                if x_min <= x <= x_max and y_min <= y <= y_max:
-                    ax.text(x, y, str(bin_info['time']), 
-                           ha='center', va='center', 
-                           fontsize=6, fontweight='normal',
-                           color='black')
-    
+            if show_labels:
+                for x, y in cluster:
+                    if x_min <= x <= x_max and y_min <= y <= y_max:
+                        ax.text(x, y, str(bin_info['time']), 
+                               ha='center', va='center', 
+                               fontsize=6, fontweight='normal',
+                               color='black')
+        
+        # Add to legend if not already included
+        if show_legend and not any(p.get_facecolor() == bin_info['face_color'] for p in legend_patches):
+            legend_patch = plt.Rectangle((0,0), 1, 1, fc=bin_info['face_color'], ec=bin_info['edge_color'], alpha=bin_info['alpha'])
+            legend_patches.append(legend_patch)
+
     # Add scale if requested
     if show_scale and not despine:
         ax.spines['bottom'].set_visible(True)
@@ -296,6 +308,11 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
         ax.set_xticks([x_min, x_max])
         ax.set_xticklabels([f"-{pixel_range//2}", f"{pixel_range//2}"])
         ax.set_xlabel("Pixels from Center")
+
+    # Add legend if requested
+    if show_legend and legend_patches:
+        ax.legend(legend_patches, [str(tb['time']) + ' ns' for tb in time_bins],
+                 loc='upper left', bbox_to_anchor=(1.05, 1), borderaxespad=0.)
 
     ax.set_aspect('equal')
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
