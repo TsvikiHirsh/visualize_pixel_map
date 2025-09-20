@@ -14,6 +14,7 @@ pip install git+https://github.com/TsvikiHirsh/visualize_pixel_map
 ```
 
 ## Usage
+- See the tutorial notebook [here](notebooks/tutorial.ipynb)
 
 ### Prerequisites
 - A CSV file exported from an empirphot file with columns: `x`, `y`, `toa`, `tof`.
