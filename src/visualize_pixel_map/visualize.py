@@ -183,7 +183,8 @@ def create_pixel_boundary_envelope(cluster_pixels):
     return create_grid_envelope(cluster_pixels)
 
 def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_size=20,
-                         custom_color=None, show_background=False, despine=True):
+                         custom_color=None, show_background=False, despine=True,
+                         time_bins=None, show_scale=False, cmap=None):
     """
     Clean publication-ready plot of pixel hit time development with envelope contours.
     
@@ -193,15 +194,21 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
     start_key_idx: starting index for the time bins
     zoom_region: tuple (x_min, x_max, y_min, y_max) for zoom region, or None for auto
     zoom_size: size of square region around center of gravity
-    custom_color: string color name (e.g., 'red', 'blue') or None for grayscale
+    custom_color: string color name (e.g., 'red', 'blue') or None for grayscale (deprecated, use cmap)
     show_background: whether to show the background histogram
     despine: whether to remove axes spines (default True)
-    """
+    time_bins: maximum time in nanoseconds (e.g., 40 for [10, 20, 30, 40], 60 for [10, 20, 30, 40, 50, 60]),
+               or None for default [10, 20, 30, 40]
+    show_scale: whether to display a scale with pixel range at the bottom (default False)
+    cmap: matplotlib colormap name or object for coloring timestamped pixels (default None for grayscale)
     
+    Returns:
+    Tuple of (fig, ax)
+    """
     fig, ax = plt.subplots(figsize=(4, 4))
     
     # Control spine visibility based on despine parameter
-    if despine:
+    if despine and not show_scale:
         for spine in ax.spines.values():
             spine.set_visible(False)
     ax.set_xticks([])
@@ -228,25 +235,31 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
                         2 * h[keys[start_key_idx + 1]] + 
                         3 * h[keys[start_key_idx + 2]] + 
                         4 * h[keys[start_key_idx + 3]])
-        ax.imshow(combined_hist, cmap="gray", origin="lower", alpha=0.3)
+        ax.imshow(combined_hist, cmap=cmap if cmap else "gray", origin="lower", alpha=0.3)
     
-    if custom_color is None:
-        time_bins = [
-            {'time': 10, 'face_color': '0.3', 'edge_color': '0.1', 'alpha': 0.6},
-            {'time': 20, 'face_color': '0.5', 'edge_color': '0.1', 'alpha': 0.7},
-            {'time': 30, 'face_color': '0.7', 'edge_color': '0.1', 'alpha': 0.8},
-            {'time': 40, 'face_color': '0.9', 'edge_color': '0.1', 'alpha': 0.9}
-        ]
+    # Define time bins based on maximum time
+    if time_bins is None:
+        time_bins_max = 40
     else:
-        time_bins = [
-            {'time': 10, 'face_color': custom_color, 'edge_color': 'black', 'alpha': 0.3},
-            {'time': 20, 'face_color': custom_color, 'edge_color': 'black', 'alpha': 0.5},
-            {'time': 30, 'face_color': custom_color, 'edge_color': 'black', 'alpha': 0.7},
-            {'time': 40, 'face_color': custom_color, 'edge_color': 'black', 'alpha': 0.9}
-        ]
+        time_bins_max = time_bins
+    time_bins = [{'time': t, 'face_color': str(t/100), 'edge_color': '0.1', 'alpha': 0.6 + 0.3 * (t/100)} 
+                 for t in range(10, time_bins_max + 1, 10)]
     
+    # Apply cmap to face colors if provided
+    if cmap and len(time_bins) > 1:
+        norm = plt.Normalize(min(tb['time'] for tb in time_bins), max(tb['time'] for tb in time_bins))
+        for i, bin_info in enumerate(time_bins):
+            rgba = plt.cm.get_cmap(cmap)(norm(bin_info['time']))
+            bin_info['face_color'] = rgba[:3]  # Use RGB only, alpha handled separately
+    elif custom_color:
+        # Deprecation warning for custom_color
+        import warnings
+        warnings.warn("The 'custom_color' parameter is deprecated. Use 'cmap' instead.", DeprecationWarning)
+        for bin_info in time_bins:
+            bin_info['face_color'] = custom_color
+
     for i, bin_info in enumerate(time_bins):
-        hist_data = h[keys[start_key_idx + i]]
+        hist_data = h[keys[start_key_idx + i]] if start_key_idx + i < len(keys) else np.zeros_like(h[keys[0]])
         zoom_hist = hist_data[y_min:y_max, x_min:x_max]
         y_indices, x_indices = np.where(zoom_hist > 0)
         
@@ -276,6 +289,14 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
                            fontsize=6, fontweight='normal',
                            color='black')
     
+    # Add scale if requested
+    if show_scale and not despine:
+        ax.spines['bottom'].set_visible(True)
+        pixel_range = int(x_max - x_min)
+        ax.set_xticks([x_min, x_max])
+        ax.set_xticklabels([f"-{pixel_range//2}", f"{pixel_range//2}"])
+        ax.set_xlabel("Pixels from Center")
+
     ax.set_aspect('equal')
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
     

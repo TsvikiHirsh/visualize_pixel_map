@@ -42,20 +42,26 @@ class Data:
         
         self.keys = list(self.h.keys())
 
-    def plot(self, start_key_idx=800, zoom_region=None, zoom_size=20,
-                         custom_color=None, show_background=False, despine=True):
+    def plot(self, key=800, zoom_region=None, zoom_size=20,
+                         custom_color=None, show_background=False, despine=True,
+                         time_bins=None, show_scale=False, cmap=None):
         """
         Plot the pixel hit time development using the stored histograms.
         
         Parameters:
-        start_key_idx (int): Starting index for the time bins.
+        key (int): Starting index for the time bins.
         zoom_region (tuple): (x, y) coordinates for zooming in.
         zoom_size (int): Size of the zoom region.
         custom_color (str): Custom color map for plotting.
         show_background (bool): Whether to show background pixels.
         despine (bool): Whether to remove plot spines.
+        time_bins: maximum time in nanoseconds (e.g., 40 for [10, 20, 30, 40], 60 for [10, 20, 30, 40, 50, 60]),
+               or None for default [10, 20, 30, 40]
+        show_scale (bool): Whether to show scale on the plot.
+        cmap (str): Colormap to use for the plot.
         """
 
         from visualize_pixel_map.visualize import plot_time_development
-        plot_time_development(self.h, self.keys, start_key_idx, zoom_region, zoom_size,
-                              custom_color, show_background, despine)
+        plot_time_development(self.h, self.keys, key, zoom_region, zoom_size,
+                              custom_color, show_background, despine,
+                              time_bins, show_scale, cmap)
