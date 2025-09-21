@@ -14,6 +14,17 @@ pip install git+https://github.com/TsvikiHirsh/visualize_pixel_map
 ```
 
 ## Usage
+
+```python
+import visualize_pixel_map as vpm
+
+# Load and prepare data
+data = vpm.Data("data.empiphot.csv")
+
+# Visualize
+data.plot()
+```
+
 - See the tutorial notebook [here](notebooks/tutorial.ipynb)
 
 ### Prerequisites
@@ -23,7 +34,6 @@ pip install git+https://github.com/TsvikiHirsh/visualize_pixel_map
 
 ```python
 import visualize_pixel_map as vpm
-import matplotlib.pyplot as plt
 
 # Load and prepare data with custom time bins
 data = vpm.Data(
