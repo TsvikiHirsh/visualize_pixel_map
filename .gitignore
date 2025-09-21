@@ -1,3 +1,4 @@
 src/visualize_pixel_map.egg-info/*
 build/*
+build/lib/*
 notebooks/.ipynb_checkpoints/*
