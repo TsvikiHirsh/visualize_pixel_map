@@ -45,23 +45,101 @@ def find_contour_envelope(binary_mask):
 def calculate_center_of_gravity(h, keys, start_key_idx, num_bins=4):
     """
     Calculate center of gravity of the combined event.
+
+    Parameters
+    ----------
+    h : dict of 2D arrays
+        Histograms (image frames).
+    keys : list
+        List of keys (timestamps).
+    start_key_idx : int
+        Starting index.
+    num_bins : int
+        How many consecutive bins to combine.
+
+    Returns
+    -------
+    (cog_x, cog_y) : tuple of floats
+        Center of gravity coordinates, or (None, None) if empty.
     """
-    combined_hist = np.zeros_like(h[keys[start_key_idx]])
-    for i in range(num_bins):
-        combined_hist += h[keys[start_key_idx + i]]
-    
-    if np.sum(combined_hist) == 0:
+    # Validate indices
+    if start_key_idx >= len(keys):
         return None, None
     
-    y_indices, x_indices = np.meshgrid(np.arange(combined_hist.shape[0]), 
-                                      np.arange(combined_hist.shape[1]), 
-                                      indexing='ij')
+    combined_hist = np.zeros_like(h[keys[start_key_idx]], dtype=float)
+    actual_bins_used = 0
     
+    for i in range(num_bins):
+        if start_key_idx + i < len(keys):
+            combined_hist += h[keys[start_key_idx + i]]
+            actual_bins_used += 1
+
+    if np.sum(combined_hist) == 0 or actual_bins_used == 0:
+        return None, None
+
+    # Note: shape is (rows=y, cols=x)
+    y_indices, x_indices = np.indices(combined_hist.shape)
+
     total_weight = np.sum(combined_hist)
     cog_x = np.sum(x_indices * combined_hist) / total_weight
     cog_y = np.sum(y_indices * combined_hist) / total_weight
-    
+
     return int(cog_x), int(cog_y)
+
+def calculate_optimal_zoom(h, keys, start_key_idx, num_bins=4, margin=5):
+    """
+    Calculate optimal zoom region based on actual data extent.
+    
+    Parameters
+    ----------
+    h : dict of 2D arrays
+        Histograms (image frames).
+    keys : list
+        List of keys (timestamps).
+    start_key_idx : int
+        Starting index.
+    num_bins : int
+        How many consecutive bins to check.
+    margin : int
+        Extra pixels to add around the data.
+    
+    Returns
+    -------
+    (x_min, x_max, y_min, y_max) : tuple of ints
+        Zoom region, or None if no data found.
+    """
+    # Combine histograms to find data extent
+    combined_hist = np.zeros_like(h[keys[start_key_idx]], dtype=float)
+    
+    for i in range(num_bins):
+        if start_key_idx + i < len(keys):
+            combined_hist += h[keys[start_key_idx + i]]
+    
+    # Find all non-zero pixels
+    y_indices, x_indices = np.where(combined_hist > 0)
+    
+    if len(x_indices) == 0:
+        return None
+    
+    # Calculate bounding box
+    x_min = max(0, np.min(x_indices) - margin)
+    x_max = min(combined_hist.shape[1], np.max(x_indices) + margin + 1)
+    y_min = max(0, np.min(y_indices) - margin)
+    y_max = min(combined_hist.shape[0], np.max(y_indices) + margin + 1)
+    
+    # Ensure minimum size
+    min_size = 10
+    if x_max - x_min < min_size:
+        center_x = (x_min + x_max) / 2
+        x_min = max(0, int(center_x - min_size/2))
+        x_max = min(combined_hist.shape[1], int(center_x + min_size/2))
+    
+    if y_max - y_min < min_size:
+        center_y = (y_min + y_max) / 2
+        y_min = max(0, int(center_y - min_size/2))
+        y_max = min(combined_hist.shape[0], int(center_y + min_size/2))
+    
+    return (x_min, x_max, y_min, y_max)
 
 def find_connected_clusters(pixel_coords):
     """
@@ -183,10 +261,10 @@ def create_pixel_boundary_envelope(cluster_pixels):
         return path
     return create_grid_envelope(cluster_pixels)
 
-def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_size=20,
+def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_size=None,
                          custom_color=None, show_background=False, despine=True,
                          time_bins=None, show_scale=False, cmap=None,
-                         show_labels=True, show_legend=False):
+                         show_labels=True, show_legend=False, auto_zoom_margin=5):
     """
     Clean publication-ready plot of pixel hit time development with envelope contours.
     
@@ -195,7 +273,7 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
     keys: list of dictionary keys (timestamps)
     start_key_idx: starting index for the time bins
     zoom_region: tuple (x_min, x_max, y_min, y_max) for zoom region, or None for auto
-    zoom_size: size of square region around center of gravity
+    zoom_size: if provided, creates a square region of this size around CoG (overrides auto zoom)
     custom_color: string color name (e.g., 'red', 'blue') or None for grayscale (deprecated, use cmap)
     show_background: whether to show the background histogram
     despine: whether to remove axes spines (default True)
@@ -205,6 +283,7 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
     cmap: matplotlib colormap name or object for coloring timestamped pixels (default None for grayscale)
     show_labels: whether to display timestamp text labels on pixels (default True)
     show_legend: whether to display a legend with timestamp colors (default False)
+    auto_zoom_margin: margin in pixels around data when auto-zooming (only used if zoom_size not set)
     
     Returns:
     Tuple of (fig, ax)
@@ -221,50 +300,66 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
     
+    # Determine number of time bins to use
+    if time_bins is None:
+        time_bins_max = 40
+    else:
+        time_bins_max = time_bins
+    num_bins = time_bins_max // 10
+    
+    # Calculate zoom region if not provided
     if zoom_region is None:
-        cog_x, cog_y = calculate_center_of_gravity(h, keys, start_key_idx)
-        if cog_x is None:
-            zoom_region = (180, 200, 150, 170)
+        # If zoom_size is specified, use CoG-based zoom with specified size
+        if zoom_size is not None:
+            cog_x, cog_y = calculate_center_of_gravity(h, keys, start_key_idx, num_bins)
+            
+            if cog_x is not None and cog_y is not None:
+                half_size = zoom_size // 2
+                zoom_region = (cog_x - half_size, cog_x + half_size,
+                              cog_y - half_size, cog_y + half_size)
+            else:
+                # If CoG fails, fall back to optimal zoom
+                zoom_region = calculate_optimal_zoom(h, keys, start_key_idx, num_bins, auto_zoom_margin)
         else:
-            half_size = zoom_size // 2
-            zoom_region = (cog_x - half_size, cog_x + half_size,
-                          cog_y - half_size, cog_y + half_size)
+            # Use automatic optimal zoom based on data extent
+            zoom_region = calculate_optimal_zoom(h, keys, start_key_idx, num_bins, auto_zoom_margin)
+        
+        # If all methods fail, use default region
+        if zoom_region is None:
+            print(f"Warning: No data found at start_key_idx={start_key_idx}. Using default zoom.")
+            zoom_region = (100, 150, 100, 150)
     
     x_min, x_max, y_min, y_max = zoom_region
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
     
     if show_background:
-        combined_hist = (h[keys[start_key_idx]] + 
-                        2 * h[keys[start_key_idx + 1]] + 
-                        3 * h[keys[start_key_idx + 2]] + 
-                        4 * h[keys[start_key_idx + 3]])
+        combined_hist = np.zeros_like(h[keys[start_key_idx]], dtype=float)
+        for i in range(num_bins):
+            if start_key_idx + i < len(keys):
+                combined_hist += (i + 1) * h[keys[start_key_idx + i]]
         ax.imshow(combined_hist, cmap=cmap if cmap else "gray", origin="lower", alpha=0.3)
     
     # Define time bins based on maximum time
-    if time_bins is None:
-        time_bins_max = 40
-    else:
-        time_bins_max = time_bins
-    time_bins = [{'time': t, 'face_color': str(t/100), 'edge_color': '0.1', 'alpha': 0.6 + 0.3 * (t/100)} 
-                 for t in range(10, time_bins_max + 1, 10)]
+    time_bins_list = [{'time': t, 'face_color': str(t/100), 'edge_color': '0.1', 'alpha': 0.6 + 0.3 * (t/100)} 
+                      for t in range(10, time_bins_max + 1, 10)]
     
     # Apply cmap to face colors if provided
-    if cmap and len(time_bins) > 1:
-        norm = plt.Normalize(min(tb['time'] for tb in time_bins), max(tb['time'] for tb in time_bins))
-        for i, bin_info in enumerate(time_bins):
+    if cmap and len(time_bins_list) > 1:
+        norm = plt.Normalize(min(tb['time'] for tb in time_bins_list), max(tb['time'] for tb in time_bins_list))
+        for i, bin_info in enumerate(time_bins_list):
             rgba = plt.cm.get_cmap(cmap)(norm(bin_info['time']))
             bin_info['face_color'] = rgba[:3]  # Use RGB only, alpha handled separately
     elif custom_color:
         # Deprecation warning for custom_color
         import warnings
         warnings.warn("The 'custom_color' parameter is deprecated. Use 'cmap' instead.", DeprecationWarning)
-        for bin_info in time_bins:
+        for bin_info in time_bins_list:
             bin_info['face_color'] = custom_color
 
     # Collect legend handles
     legend_patches = []
-    for i, bin_info in enumerate(time_bins):
+    for i, bin_info in enumerate(time_bins_list):
         hist_data = h[keys[start_key_idx + i]] if start_key_idx + i < len(keys) else np.zeros_like(h[keys[0]])
         zoom_hist = hist_data[y_min:y_max, x_min:x_max]
         y_indices, x_indices = np.where(zoom_hist > 0)
@@ -311,7 +406,7 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
 
     # Add legend if requested
     if show_legend and legend_patches:
-        ax.legend(legend_patches, [str(tb['time']) + ' ns' for tb in time_bins],
+        ax.legend(legend_patches, [str(tb['time']) + ' ns' for tb in time_bins_list],
                  loc='upper left', bbox_to_anchor=(1.05, 1), borderaxespad=0.)
 
     ax.set_aspect('equal')
