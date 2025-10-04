@@ -19,7 +19,7 @@ class Data:
             neutron_id (bool): If True, group histograms by neutron_id (for simulation data).
             verbosity (int): If 1, show progress bar during initialization. If 0, silent.
         """
-        from tqdm.auto import tqdm
+        from tqdm.notebook import tqdm
         
         self.verbosity = verbosity
         
@@ -103,7 +103,7 @@ class Data:
     
     def prepare_histograms(self, bins):
         """Prepare 2D histograms from the data."""
-        from tqdm.auto import tqdm
+        from tqdm.notebook import tqdm
         
         self.h = {}
         
@@ -113,17 +113,20 @@ class Data:
             df1 = self.df.query("toa < @bins[-1]")
             
             # Create composite keys: (time_bin, neutron_id)
-            groups = list(df1.groupby(["tbin", "neutron_id"], observed=False))
+            grouped = df1.groupby(["tbin", "neutron_id"], observed=False)
             
-            # Only show progress bar if there are groups to process
-            if self.verbosity and len(groups) > 0:
-                iterator = tqdm(groups, desc="Preparing histograms")
+            # Get total count for progress bar
+            total = len(grouped) if self.verbosity else None
+            
+            # Iterate directly with tqdm wrapper
+            if self.verbosity:
+                iterator = tqdm(grouped, desc="Preparing histograms", total=total)
             else:
-                iterator = groups
+                iterator = grouped
             
             for (tbin, nid), group in iterator:
                 try:
-                    if not group.empty:
+                    if not group.empty and not pd.isna(tbin):
                         key = (tbin, int(nid))
                         self.h[key], x_edges, y_edges = np.histogram2d(
                             group["x"], group["y"], bins=[np.arange(256), np.arange(256)]
@@ -137,10 +140,10 @@ class Data:
             self.df["tbin"] = pd.cut(self.df["toa"], bins, labels=bins[:-1])
             df1 = self.df.query("toa < @bins[-1]").set_index("tbin")
             
-            unique_bins = list(df1.index.unique())
+            unique_bins = df1.index.unique()
             
-            # Only show progress bar if there are bins to process
-            if self.verbosity and len(unique_bins) > 0:
+            # Iterate directly with tqdm wrapper
+            if self.verbosity:
                 iterator = tqdm(unique_bins, desc="Preparing histograms")
             else:
                 iterator = unique_bins
@@ -250,7 +253,7 @@ class Data:
                                     despine, time_bins, show_scale, cmap, 
                                     show_labels, show_legend, auto_zoom_margin)
             else:
-                # neutron_id is enabled but no filter - need to pick first neutron or handle key properly
+                # neutron_id is enabled but no filter
                 if isinstance(key, tuple):
                     # User provided a composite key like (time, neutron_id)
                     if key not in self.keys:
@@ -267,27 +270,33 @@ class Data:
                                         despine, time_bins, show_scale, cmap, 
                                         show_labels, show_legend, auto_zoom_margin)
                 elif isinstance(key, int):
-                    # User provided index - use first neutron by default
-                    if len(self.keys) == 0:
-                        raise ValueError("No data available to plot")
+                    # User provided index - treat keys as if they were a flat list
+                    # This allows plotting across all neutrons by index
+                    if key >= len(self.keys):
+                        raise ValueError(f"key index {key} out of range. Valid range: 0-{len(self.keys)-1}")
                     
-                    # Get first neutron ID
-                    first_neutron = self.keys[0][1] if isinstance(self.keys[0], tuple) else None
-                    if first_neutron is None:
-                        raise ValueError("Cannot determine neutron_id from keys")
-                    
-                    print(f"Note: neutron_id grouping enabled. Plotting neutron_id={first_neutron}. Use neutron_id_filter to specify different neutron.")
-                    
-                    neutron_keys = self.get_keys_for_neutron(first_neutron)
-                    filtered_h = {k: v for k, v in self.h.items() if isinstance(k, tuple) and k[1] == first_neutron}
-                    
-                    if key >= len(neutron_keys):
-                        raise ValueError(f"key index {key} out of range for neutron {first_neutron}")
-                    
-                    plot_time_development(filtered_h, neutron_keys, key, 
-                                        zoom_region, zoom_size, custom_color, show_background, 
-                                        despine, time_bins, show_scale, cmap, 
-                                        show_labels, show_legend, auto_zoom_margin)
+                    # Use the key directly as an index into the full keys list
+                    # When plotting, we need to determine which neutron this belongs to
+                    actual_key = self.keys[key]
+                    if isinstance(actual_key, tuple):
+                        neutron_id_from_key = actual_key[1]
+                        neutron_keys = self.get_keys_for_neutron(neutron_id_from_key)
+                        filtered_h = {k: v for k, v in self.h.items() if isinstance(k, tuple) and k[1] == neutron_id_from_key}
+                        start_key_idx = neutron_keys.index(actual_key)
+                        
+                        if self.verbosity:
+                            print(f"Note: Using key index {key} which corresponds to neutron_id={neutron_id_from_key}, time bin index {start_key_idx}")
+                        
+                        plot_time_development(filtered_h, neutron_keys, start_key_idx, 
+                                            zoom_region, zoom_size, custom_color, show_background, 
+                                            despine, time_bins, show_scale, cmap, 
+                                            show_labels, show_legend, auto_zoom_margin)
+                    else:
+                        # Shouldn't happen but handle gracefully
+                        plot_time_development(self.h, self.keys, key, 
+                                            zoom_region, zoom_size, custom_color, show_background, 
+                                            despine, time_bins, show_scale, cmap, 
+                                            show_labels, show_legend, auto_zoom_margin)
         else:
             # Standard plotting without neutron grouping
             if isinstance(key, tuple):
