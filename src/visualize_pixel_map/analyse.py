@@ -378,9 +378,7 @@ class Data:
         return [key for key in self.keys if isinstance(key, tuple) and key[1] == neutron_id]
 
     def plot(self, key=None, neutron_id_filter=None,
-             photon_range=None, photon_ids=None,
-             pixel_range=None, pixel_ids=None,
-             event_range=None, event_ids=None,
+             photons=None, pixels=None, events=None,
              toa_range=None,
              color_by='toa',
              zoom_region=None, zoom_size=None,
@@ -394,12 +392,21 @@ class Data:
             key (int or tuple): Starting index for the time bins. If neutron_id is enabled,
                                can be tuple (time_index, neutron_id) or just time_index.
             neutron_id_filter (int): If provided, only plot data for this specific neutron.
-            photon_range (tuple): (start_idx, end_idx) to filter by photon index range.
-            photon_ids (list): List of specific photon IDs to include.
-            pixel_range (tuple): (start_idx, end_idx) to filter by pixel index range.
-            pixel_ids (list): List of specific pixel indices to include.
-            event_range (tuple): (start_idx, end_idx) to filter by event index range.
-            event_ids (list): List of specific event IDs to include.
+            photons: Filter by photons. Can be:
+                    - tuple (start, end): index range
+                    - list [5, 10, 15]: specific IDs
+                    - int 5: single ID
+                    - slice(0, 10): slice object
+            pixels: Filter by pixel hits. Can be:
+                   - tuple (start, end): index range
+                   - list [100, 200]: specific indices
+                   - int 100: single index
+                   - slice(0, 1000): slice object
+            events: Filter by events. Can be:
+                   - tuple (start, end): index range
+                   - list [1, 2, 3]: specific IDs
+                   - int 1: single ID
+                   - slice(0, 5): slice object
             toa_range (tuple): (min_toa, max_toa) in seconds to filter by time of arrival.
             color_by (str): 'toa' or 'tot' - which parameter to use for colormap.
             zoom_region (tuple): (x_min, x_max, y_min, y_max) for zoom region.
@@ -419,12 +426,9 @@ class Data:
 
         # Apply filters to create a filtered dataframe
         filtered_df = self._apply_filters(
-            photon_range=photon_range,
-            photon_ids=photon_ids,
-            pixel_range=pixel_range,
-            pixel_ids=pixel_ids,
-            event_range=event_range,
-            event_ids=event_ids,
+            photons=photons,
+            pixels=pixels,
+            events=events,
             toa_range=toa_range,
             neutron_id_filter=neutron_id_filter
         )
@@ -471,9 +475,7 @@ class Data:
                          show_background, despine, time_bins, show_scale, cmap,
                          show_labels, show_legend, auto_zoom_margin, color_by)
 
-    def _apply_filters(self, photon_range=None, photon_ids=None,
-                      pixel_range=None, pixel_ids=None,
-                      event_range=None, event_ids=None,
+    def _apply_filters(self, photons=None, pixels=None, events=None,
                       toa_range=None, neutron_id_filter=None):
         """
         Apply filters to the dataframe.
@@ -484,42 +486,72 @@ class Data:
         df = self.df.copy()
         any_filter_applied = False
 
-        # Filter by photon range or IDs
-        if photon_range is not None and self.has_photon_id:
-            # Get unique photon IDs and filter by index range
-            unique_photons = df['assoc_photon_id'].dropna().unique()
-            sorted_photons = sorted(unique_photons)
-            start_idx, end_idx = photon_range
-            selected_photons = sorted_photons[start_idx:end_idx]
-            df = df[df['assoc_photon_id'].isin(selected_photons)]
-            any_filter_applied = True
+        # Helper function to parse flexible filter parameter
+        def parse_filter(param):
+            """Parse filter parameter into (use_range, use_ids) tuple."""
+            if param is None:
+                return None, None
+            elif isinstance(param, slice):
+                # Convert slice to tuple range
+                return (param.start or 0, param.stop), None
+            elif isinstance(param, tuple) and len(param) == 2:
+                # Tuple is a range
+                return param, None
+            elif isinstance(param, (list, np.ndarray)):
+                # List/array is specific IDs
+                return None, param
+            elif isinstance(param, (int, np.integer)):
+                # Single integer is a single ID
+                return None, [param]
+            else:
+                raise ValueError(f"Invalid filter parameter: {param}. "
+                               "Expected tuple, list, int, or slice.")
 
-        if photon_ids is not None and self.has_photon_id:
-            df = df[df['assoc_photon_id'].isin(photon_ids)]
-            any_filter_applied = True
+        # Filter by photons
+        if photons is not None and self.has_photon_id:
+            photon_range, photon_ids = parse_filter(photons)
 
-        # Filter by event range or IDs
-        if event_range is not None and self.has_event_id:
-            unique_events = df['assoc_event_id'].dropna().unique()
-            sorted_events = sorted(unique_events)
-            start_idx, end_idx = event_range
-            selected_events = sorted_events[start_idx:end_idx]
-            df = df[df['assoc_event_id'].isin(selected_events)]
-            any_filter_applied = True
+            if photon_range is not None:
+                # Get unique photon IDs and filter by index range
+                unique_photons = df['assoc_photon_id'].dropna().unique()
+                sorted_photons = sorted(unique_photons)
+                start_idx, end_idx = photon_range
+                selected_photons = sorted_photons[start_idx:end_idx]
+                df = df[df['assoc_photon_id'].isin(selected_photons)]
+                any_filter_applied = True
 
-        if event_ids is not None and self.has_event_id:
-            df = df[df['assoc_event_id'].isin(event_ids)]
-            any_filter_applied = True
+            if photon_ids is not None:
+                df = df[df['assoc_photon_id'].isin(photon_ids)]
+                any_filter_applied = True
 
-        # Filter by pixel range (index in dataframe)
-        if pixel_range is not None:
-            start_idx, end_idx = pixel_range
-            df = df.iloc[start_idx:end_idx]
-            any_filter_applied = True
+        # Filter by events
+        if events is not None and self.has_event_id:
+            event_range, event_ids = parse_filter(events)
 
-        if pixel_ids is not None:
-            df = df.iloc[pixel_ids]
-            any_filter_applied = True
+            if event_range is not None:
+                unique_events = df['assoc_event_id'].dropna().unique()
+                sorted_events = sorted(unique_events)
+                start_idx, end_idx = event_range
+                selected_events = sorted_events[start_idx:end_idx]
+                df = df[df['assoc_event_id'].isin(selected_events)]
+                any_filter_applied = True
+
+            if event_ids is not None:
+                df = df[df['assoc_event_id'].isin(event_ids)]
+                any_filter_applied = True
+
+        # Filter by pixels (index in dataframe)
+        if pixels is not None:
+            pixel_range, pixel_ids = parse_filter(pixels)
+
+            if pixel_range is not None:
+                start_idx, end_idx = pixel_range
+                df = df.iloc[start_idx:end_idx]
+                any_filter_applied = True
+
+            if pixel_ids is not None:
+                df = df.iloc[pixel_ids]
+                any_filter_applied = True
 
         # Filter by TOA range
         if toa_range is not None:
