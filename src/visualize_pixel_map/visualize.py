@@ -264,10 +264,11 @@ def create_pixel_boundary_envelope(cluster_pixels):
 def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_size=None,
                          custom_color=None, show_background=False, despine=True,
                          time_bins=None, show_scale=False, cmap=None,
-                         show_labels=True, show_legend=False, auto_zoom_margin=5):
+                         show_labels=True, show_legend=False, auto_zoom_margin=5,
+                         color_by='toa', df=None):
     """
     Clean publication-ready plot of pixel hit time development with envelope contours.
-    
+
     Parameters:
     h: dictionary with histograms
     keys: list of dictionary keys (timestamps)
@@ -284,7 +285,9 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
     show_labels: whether to display timestamp text labels on pixels (default True)
     show_legend: whether to display a legend with timestamp colors (default False)
     auto_zoom_margin: margin in pixels around data when auto-zooming (only used if zoom_size not set)
-    
+    color_by: 'toa' or 'tot' - which parameter to use for colormap (default 'toa')
+    df: pandas DataFrame with pixel data (required if color_by='tot')
+
     Returns:
     Tuple of (fig, ax)
     """
@@ -340,22 +343,37 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
                 combined_hist += (i + 1) * h[keys[start_key_idx + i]]
         ax.imshow(combined_hist, cmap=cmap if cmap else "gray", origin="lower", alpha=0.3)
     
+    # Check if we can use TOT coloring
+    use_tot_coloring = (color_by == 'tot' and df is not None and 'tot' in df.columns)
+
     # Define time bins based on maximum time
-    time_bins_list = [{'time': t, 'face_color': str(t/100), 'edge_color': '0.1', 'alpha': 0.6 + 0.3 * (t/100)} 
+    time_bins_list = [{'time': t, 'face_color': str(t/100), 'edge_color': '0.1', 'alpha': 0.6 + 0.3 * (t/100)}
                       for t in range(10, time_bins_max + 1, 10)]
-    
-    # Apply cmap to face colors if provided
-    if cmap and len(time_bins_list) > 1:
-        norm = plt.Normalize(min(tb['time'] for tb in time_bins_list), max(tb['time'] for tb in time_bins_list))
-        for i, bin_info in enumerate(time_bins_list):
-            rgba = plt.cm.get_cmap(cmap)(norm(bin_info['time']))
-            bin_info['face_color'] = rgba[:3]  # Use RGB only, alpha handled separately
-    elif custom_color:
-        # Deprecation warning for custom_color
-        import warnings
-        warnings.warn("The 'custom_color' parameter is deprecated. Use 'cmap' instead.", DeprecationWarning)
-        for bin_info in time_bins_list:
-            bin_info['face_color'] = custom_color
+
+    # Prepare TOT-based coloring if requested
+    if use_tot_coloring:
+        # Get TOT range for normalization
+        tot_values = df['tot'].dropna()
+        if len(tot_values) > 0:
+            tot_min, tot_max = tot_values.min(), tot_values.max()
+            tot_norm = plt.Normalize(tot_min, tot_max)
+            # We'll apply colors per-cluster based on actual TOT values
+        else:
+            use_tot_coloring = False  # Fall back to TOA if no TOT data
+
+    # Apply cmap to face colors if provided (for TOA mode)
+    if not use_tot_coloring:
+        if cmap and len(time_bins_list) > 1:
+            norm = plt.Normalize(min(tb['time'] for tb in time_bins_list), max(tb['time'] for tb in time_bins_list))
+            for i, bin_info in enumerate(time_bins_list):
+                rgba = plt.cm.get_cmap(cmap)(norm(bin_info['time']))
+                bin_info['face_color'] = rgba[:3]  # Use RGB only, alpha handled separately
+        elif custom_color:
+            # Deprecation warning for custom_color
+            import warnings
+            warnings.warn("The 'custom_color' parameter is deprecated. Use 'cmap' instead.", DeprecationWarning)
+            for bin_info in time_bins_list:
+                bin_info['face_color'] = custom_color
 
     # Collect legend handles
     legend_patches = []
@@ -363,34 +381,71 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
         hist_data = h[keys[start_key_idx + i]] if start_key_idx + i < len(keys) else np.zeros_like(h[keys[0]])
         zoom_hist = hist_data[y_min:y_max, x_min:x_max]
         y_indices, x_indices = np.where(zoom_hist > 0)
-        
+
         if len(x_indices) == 0:
             continue
-            
+
         pixel_coords = [(x + x_min, y + y_min) for x, y in zip(x_indices, y_indices)]
         clusters = find_connected_clusters(pixel_coords)
-        
+
         for cluster in clusters:
             envelope_points = create_pixel_boundary_envelope(cluster)
             if not envelope_points or len(envelope_points) < 3:
                 envelope_points = create_grid_envelope(cluster)
-            
+
+            # Initialize variables for TOT tracking
+            cluster_tots = []
+            mean_tot = 0
+
             if envelope_points and len(envelope_points) >= 3:
-                polygon = Polygon(envelope_points, 
-                                facecolor=bin_info['face_color'],
+                # Determine color based on TOA or TOT
+                if use_tot_coloring:
+                    # Get TOT values for pixels in this cluster
+                    for x, y in cluster:
+                        # Find pixels in dataframe matching this position
+                        # Round to integer pixel coordinates
+                        pixel_mask = (df['x'].round().astype(int) == int(x)) & (df['y'].round().astype(int) == int(y))
+                        pixel_tots = df.loc[pixel_mask, 'tot'].dropna()
+                        if len(pixel_tots) > 0:
+                            cluster_tots.extend(pixel_tots.tolist())
+
+                    if len(cluster_tots) > 0:
+                        # Use mean TOT for this cluster
+                        mean_tot = np.mean(cluster_tots)
+                        if cmap:
+                            rgba = plt.cm.get_cmap(cmap)(tot_norm(mean_tot))
+                            face_color = rgba[:3]
+                        else:
+                            # Grayscale based on TOT
+                            face_color = str(tot_norm(mean_tot))
+                    else:
+                        # No TOT data, use default
+                        face_color = bin_info['face_color']
+                else:
+                    # Use TOA-based color
+                    face_color = bin_info['face_color']
+
+                polygon = Polygon(envelope_points,
+                                facecolor=face_color,
                                 edgecolor=bin_info['edge_color'],
                                 linewidth=1.5,
                                 alpha=bin_info['alpha'])
                 ax.add_patch(polygon)
-            
+
             if show_labels:
+                # Label shows TOT value if using TOT coloring, otherwise time
+                if use_tot_coloring and len(cluster_tots) > 0:
+                    label_text = f"{mean_tot:.0f}"
+                else:
+                    label_text = str(bin_info['time'])
+
                 for x, y in cluster:
                     if x_min <= x <= x_max and y_min <= y <= y_max:
-                        ax.text(x, y, str(bin_info['time']), 
-                               ha='center', va='center', 
+                        ax.text(x, y, label_text,
+                               ha='center', va='center',
                                fontsize=6, fontweight='normal',
                                color='black')
-        
+
         # Add to legend if not already included
         if show_legend and not any(p.get_facecolor() == bin_info['face_color'] for p in legend_patches):
             legend_patch = plt.Rectangle((0,0), 1, 1, fc=bin_info['face_color'], ec=bin_info['edge_color'], alpha=bin_info['alpha'])
