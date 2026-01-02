@@ -21,7 +21,7 @@ class Data:
             time_step (float): Time step in nanoseconds for bin edges.
             sensor_size (float): Size of the sensor in mm (used for normalization).
             neutron_id (bool): If True, group histograms by neutron_id (for simulation data).
-            verbosity (int): If 1, show progress bar during initialization. If 0, silent.
+            verbosity (int): 0=QUIET (no output), 1=BASIC (progress bars), 2=ADVANCED (detailed info).
             auto_associate (bool): If True, automatically run neutron_event_analyzer when needed.
             association_mode (str): 'pixel_photon', 'photon_event', or 'full' (both).
             settings (str or dict): Path to settings.json or settings dictionary for association.
@@ -33,12 +33,17 @@ class Data:
         self.association_mode = association_mode
         self.settings = settings
 
+        # Store default binning parameters
+        self.start_time = start_time
+        self.end_time = end_time
+        self.time_step = time_step
+
         # Detect if input is file or folder
         path = Path(data_path)
 
         if path.is_file():
             # Legacy behavior: load CSV file directly
-            if self.verbosity:
+            if self.verbosity >= 1:
                 print(f"Loading CSV file: {data_path}")
             self.df = pd.read_csv(data_path)
             self.data_source = 'csv_file'
@@ -55,21 +60,15 @@ class Data:
         self.has_event_id = 'assoc_event_id' in self.df.columns
         self.has_tot = 'tot' in self.df.columns
 
-        if self.verbosity:
+        if self.verbosity >= 1:
             print(f"Loaded {len(self.df)} rows")
-            if self.has_photon_id:
-                print(f"  - Contains photon associations")
-            if self.has_event_id:
-                print(f"  - Contains event associations")
+            if self.verbosity >= 2:
+                if self.has_photon_id:
+                    print(f"  - Contains photon associations")
+                if self.has_event_id:
+                    print(f"  - Contains event associations")
 
         self._normalize_columns(sensor_size)
-        self.h = {}
-        self.keys = []
-
-        # Convert time_step from nanoseconds to seconds
-        time_step_sec = time_step * 1e-9
-        bins = np.arange(start_time, end_time + time_step_sec, time_step_sec)
-        self.prepare_histograms(bins)
 
     def _load_from_folder(self, folder_path):
         """
@@ -283,101 +282,6 @@ class Data:
                 f"(x, y, toa, tof), (x2, y2, toa2, ...), or AssociatedResults format. "
                 f"Found columns: {columns}"
             )
-    
-    def prepare_histograms(self, bins):
-        """Prepare 2D histograms from the data."""
-        from tqdm.notebook import tqdm
-        
-        self.h = {}
-        
-        if self.neutron_id and self.has_neutron_id:
-            # Group by both time bin and neutron_id
-            self.df["tbin"] = pd.cut(self.df["toa"], bins, labels=bins[:-1])
-            df1 = self.df.query("toa < @bins[-1]")
-            
-            # Create composite keys: (time_bin, neutron_id)
-            grouped = df1.groupby(["tbin", "neutron_id"], observed=False)
-            
-            # Get total count for progress bar
-            total = len(grouped) if self.verbosity else None
-            
-            # Iterate directly with tqdm wrapper
-            if self.verbosity:
-                iterator = tqdm(grouped, desc="Preparing histograms", total=total)
-            else:
-                iterator = grouped
-            
-            for (tbin, nid), group in iterator:
-                try:
-                    if not group.empty and not pd.isna(tbin):
-                        key = (tbin, int(nid))
-                        self.h[key], _, _ = np.histogram2d(
-                            group["x"], group["y"], bins=[np.arange(256), np.arange(256)]
-                        )
-                except Exception:
-                    continue
-            
-            self.keys = sorted(self.h.keys())
-        else:
-            # Original behavior: group by time bin only
-            self.df["tbin"] = pd.cut(self.df["toa"], bins, labels=bins[:-1])
-            df1 = self.df.query("toa < @bins[-1]").set_index("tbin")
-            
-            unique_bins = df1.index.unique()
-            
-            # Iterate directly with tqdm wrapper
-            if self.verbosity:
-                iterator = tqdm(unique_bins, desc="Preparing histograms")
-            else:
-                iterator = unique_bins
-            
-            for tbin in iterator:
-                try:
-                    subset = df1.loc[tbin]
-                    if not subset.empty:
-                        self.h[tbin], _, _ = np.histogram2d(
-                            subset["x"], subset["y"], bins=[np.arange(256), np.arange(256)]
-                        )
-                except Exception:
-                    continue
-            
-            self.keys = list(self.h.keys())
-        
-        if self.verbosity:
-            print(f"Created {len(self.h)} histograms")
-    
-    def get_neutron_ids(self):
-        """
-        Get list of unique neutron IDs in the data.
-        
-        Returns:
-            list: Sorted list of neutron IDs, or empty list if not available.
-        """
-        if not self.has_neutron_id:
-            return []
-        
-        if self.neutron_id:
-            # Extract unique neutron_ids from composite keys
-            return sorted(set(key[1] for key in self.keys if isinstance(key, tuple)))
-        else:
-            # Get from dataframe
-            return sorted(self.df['neutron_id'].unique().tolist())
-    
-    def get_keys_for_neutron(self, neutron_id):
-        """
-        Get all time bin keys for a specific neutron.
-
-        Parameters:
-            neutron_id (int): The neutron ID to filter by.
-
-        Returns:
-            list: List of keys (time bins) for the specified neutron.
-        """
-        if not self.neutron_id or not self.has_neutron_id:
-            raise ValueError("neutron_id grouping was not enabled during initialization")
-
-        return [key for key in self.keys if isinstance(key, tuple) and key[1] == neutron_id]
-
     # Properties for easy data inspection
     @property
     def associated_df(self):
@@ -421,10 +325,15 @@ class Data:
         """Get information about time range in the data."""
         if 'toa' not in self.df.columns or len(self.df) == 0:
             return None
+
+        # Calculate expected number of bins
+        time_step_sec = self.time_step * 1e-9
+        expected_bins = int((self.end_time - self.start_time) / time_step_sec)
+
         return {
             'range': (self.df['toa'].min(), self.df['toa'].max()),
-            'bins': len(self.keys),
-            'bin_keys': self.keys[:10] if len(self.keys) > 10 else self.keys  # Show first 10
+            'default_bins': expected_bins,
+            'bin_width_ns': self.time_step
         }
 
     @property
@@ -467,18 +376,18 @@ class Data:
 
     def plot(self, key=None, neutron_id_filter=None,
              photons=None, pixels=None, events=None,
-             toa_range=None,
+             toa_range=None, query=None,
              color_by='toa',
              zoom_region=None, zoom_size=None,
              custom_color=None, show_background=False, despine=True,
              time_bins=None, show_scale=False, cmap=None,
-             show_labels=True, show_legend=False, auto_zoom_margin=5):
+             show_labels=True, show_legend=False, auto_zoom_margin=5,
+             verbosity=None):
         """
-        Plot the pixel hit time development using the stored histograms.
+        Plot the pixel hit time development by filtering data, then creating histograms.
 
         Parameters:
-            key (int or tuple): Starting index for the time bins. If neutron_id is enabled,
-                               can be tuple (time_index, neutron_id) or just time_index.
+            key (int): Starting index for the time bins (default: 0).
             neutron_id_filter (int): If provided, only plot data for this specific neutron.
             photons: Filter by photons. Can be:
                     - tuple (start, end): index range
@@ -496,10 +405,10 @@ class Data:
                    - int 1: single ID
                    - slice(0, 5): slice object
             toa_range (tuple): (min_toa, max_toa) in seconds to filter by time of arrival.
+            query (str): Pandas query string to filter data (e.g., "tot > 50 & x < 128").
             color_by (str): 'toa' or 'tot' - which parameter to use for colormap.
             zoom_region (tuple): (x_min, x_max, y_min, y_max) for zoom region.
             zoom_size (int): If provided, creates a square zoom region of this size around CoG.
-                           Overrides automatic zoom. If None, uses automatic zoom.
             custom_color (str): Custom color map for plotting (deprecated, use cmap).
             show_background (bool): Whether to show background pixels.
             despine (bool): Whether to remove plot spines.
@@ -508,63 +417,73 @@ class Data:
             cmap (str): Colormap to use for the plot.
             show_labels (bool): Whether to display timestamp text labels on pixels.
             show_legend (bool): Whether to display a legend with timestamp colors.
-            auto_zoom_margin (int): Margin in pixels around data when auto-zooming (if zoom_size not set).
+            auto_zoom_margin (int): Margin in pixels around data when auto-zooming.
+            verbosity (int): Override instance verbosity. 0=QUIET, 1=BASIC, 2=ADVANCED.
         """
         from visualize_pixel_map.visualize import plot_time_development
 
-        # Apply filters to create a filtered dataframe
+        # Use provided verbosity or instance verbosity
+        verb = verbosity if verbosity is not None else self.verbosity
+
+        # Step 1: Apply filters to dataframe
         filtered_df = self._apply_filters(
             photons=photons,
             pixels=pixels,
             events=events,
             toa_range=toa_range,
-            neutron_id_filter=neutron_id_filter
+            neutron_id_filter=neutron_id_filter,
+            query=query,
+            verbosity=verb
         )
 
-        # If filters were applied, we need to recompute histograms with filtered data
-        if filtered_df is not None:
-            if self.verbosity:
-                print(f"Filtered data: {len(filtered_df)} rows (from {len(self.df)} original)")
+        # Use filtered data or original if no filters applied
+        plot_df = filtered_df if filtered_df is not None else self.df
 
-            # Temporarily replace df and recompute histograms
-            original_df = self.df
-            self.df = filtered_df
+        if len(plot_df) == 0:
+            raise ValueError(
+                "No pixel hits to plot after filtering. "
+                "Check data.info() for available ranges or adjust your filters."
+            )
 
-            # Recompute histograms with filtered data
-            bins = self.keys  # Use existing time bins
-            if len(bins) > 0:
-                # Extract time range from existing bins
-                if isinstance(bins[0], tuple):
-                    time_bins_array = sorted(set(k[0] for k in bins))
-                else:
-                    time_bins_array = sorted(bins)
+        # Step 2: Create histograms from filtered data
+        time_step_sec = self.time_step * 1e-9
 
-                # Create proper bin edges
-                if len(time_bins_array) > 1:
-                    step = time_bins_array[1] - time_bins_array[0]
-                    bins_edges = np.append(time_bins_array, time_bins_array[-1] + step)
-                else:
-                    bins_edges = np.array([time_bins_array[0], time_bins_array[0] + 1e-9])
-
-                self.prepare_histograms(bins_edges)
-
-            # Plot with filtered histograms
-            self._do_plot(key, neutron_id_filter, zoom_region, zoom_size, custom_color,
-                         show_background, despine, time_bins, show_scale, cmap,
-                         show_labels, show_legend, auto_zoom_margin, color_by)
-
-            # Restore original data
-            self.df = original_df
-            # Recompute histograms with original data
-            self.prepare_histograms(bins_edges)
+        # Determine time range for histograms
+        if toa_range is not None:
+            hist_start, hist_end = toa_range
         else:
-            # No filters, use existing histograms
-            self._do_plot(key, neutron_id_filter, zoom_region, zoom_size, custom_color,
-                         show_background, despine, time_bins, show_scale, cmap,
-                         show_labels, show_legend, auto_zoom_margin, color_by)
+            hist_start = max(self.start_time, plot_df['toa'].min())
+            hist_end = min(self.end_time, plot_df['toa'].max())
+
+        bins = np.arange(hist_start, hist_end + time_step_sec, time_step_sec)
+
+        if len(bins) < 2:
+            raise ValueError(
+                f"Not enough time bins for the data. "
+                f"Data TOA range: {plot_df['toa'].min():.6f} - {plot_df['toa'].max():.6f}s"
+            )
+
+        h, keys = self._create_histograms(plot_df, bins, verbosity=verb)
+
+        # Step 3: Plot
+        if key is None:
+            key = 0
+
+        if key >= len(keys):
+            raise ValueError(
+                f"key={key} is out of range. Valid range: 0-{len(keys)-1}. "
+                f"Total time bins: {len(keys)}"
+            )
+
+        return plot_time_development(
+            h, keys, key,
+            zoom_region, zoom_size, custom_color, show_background,
+            despine, time_bins, show_scale, cmap,
+            show_labels, show_legend, auto_zoom_margin, color_by, plot_df
+        )
 
     def _apply_filters(self, photons=None, pixels=None, events=None,
-                      toa_range=None, neutron_id_filter=None):
+                      toa_range=None, neutron_id_filter=None, query=None, verbosity=1):
         """
         Apply filters to the dataframe.
 
@@ -573,6 +492,7 @@ class Data:
         """
         df = self.df.copy()
         any_filter_applied = False
+        original_count = len(df)
 
         # Helper function to parse flexible filter parameter
         def parse_filter(param):
@@ -646,124 +566,77 @@ class Data:
             min_toa, max_toa = toa_range
             df = df[(df['toa'] >= min_toa) & (df['toa'] <= max_toa)]
             any_filter_applied = True
+            if verbosity >= 2:
+                print(f"  - TOA range filter: {len(df)} rows remain")
 
-        # Filter by neutron ID (handled separately in _do_plot)
-        # We don't filter here to maintain compatibility with existing code
+        # Filter by neutron ID
+        if neutron_id_filter is not None and self.has_neutron_id:
+            df = df[df['neutron_id'] == neutron_id_filter]
+            any_filter_applied = True
+            if verbosity >= 2:
+                print(f"  - Neutron ID filter: {len(df)} rows remain")
+
+        # Apply pandas query string
+        if query is not None:
+            try:
+                df = df.query(query)
+                any_filter_applied = True
+                if verbosity >= 2:
+                    print(f"  - Query '{query}': {len(df)} rows remain")
+            except Exception as e:
+                raise ValueError(f"Invalid query string '{query}': {e}")
+
+        # Print summary if filters were applied
+        if any_filter_applied and verbosity >= 1:
+            print(f"Filtered: {len(df):,} rows (from {original_count:,}, {len(df)/original_count*100:.1f}%)")
 
         return df if any_filter_applied else None
 
-    def _do_plot(self, key, neutron_id_filter, zoom_region, zoom_size, custom_color,
-                show_background, despine, time_bins, show_scale, cmap,
-                show_labels, show_legend, auto_zoom_margin, color_by):
+    def _create_histograms(self, df, bins, verbosity=1):
         """
-        Internal method to perform the actual plotting.
+        Create 2D histograms from filtered dataframe.
+
+        Parameters:
+            df (pd.DataFrame): Filtered dataframe to create histograms from.
+            bins (np.ndarray): Time bin edges.
+            verbosity (int): Verbosity level.
+
+        Returns:
+            tuple: (h, keys) where h is dict of histograms and keys is list of time bin values.
         """
-        from visualize_pixel_map.visualize import plot_time_development
+        from tqdm.notebook import tqdm
 
-        # Validate we have data to plot
-        if len(self.keys) == 0:
-            raise ValueError(
-                "No data to plot. The filtered data resulted in no time bins. "
-                "Try adjusting your filter parameters or check data.info() for available ranges."
-            )
+        h = {}
 
-        if len(self.df) == 0:
-            raise ValueError(
-                "No pixel hits to plot. The filtered data is empty. "
-                "Check data.info() for available ranges."
-            )
+        # Create time bins
+        df_copy = df.copy()
+        df_copy["tbin"] = pd.cut(df_copy["toa"], bins, labels=bins[:-1], include_lowest=True)
+        df_binned = df_copy.query("toa < @bins[-1]")
 
-        # Determine the starting key
-        if key is None:
-            key = 0
+        if len(df_binned) == 0:
+            if verbosity >= 1:
+                print("Warning: No data in specified time range")
+            return {}, []
 
-        # Validate key index
-        if isinstance(key, int) and key >= len(self.keys):
-            raise ValueError(
-                f"key={key} is out of range. Valid range: 0-{len(self.keys)-1}. "
-                f"Total time bins: {len(self.keys)}"
-            )
+        unique_bins = df_binned["tbin"].dropna().unique()
 
-        # Handle neutron_id filtering or when using composite keys
-        if self.neutron_id and self.has_neutron_id:
-            if neutron_id_filter is not None:
-                # Get keys for specific neutron
-                neutron_keys = self.get_keys_for_neutron(neutron_id_filter)
-                if not neutron_keys:
-                    raise ValueError(f"No data found for neutron_id={neutron_id_filter}")
-                
-                # Find the appropriate starting key
-                if isinstance(key, int):
-                    if key >= len(neutron_keys):
-                        raise ValueError(f"key index {key} out of range for neutron {neutron_id_filter}")
-                    start_key = neutron_keys[key]
-                else:
-                    start_key = key
-                
-                # Create a filtered view of histograms and keys for this neutron
-                filtered_h = {k: v for k, v in self.h.items() if isinstance(k, tuple) and k[1] == neutron_id_filter}
-                filtered_keys = neutron_keys
-                
-                # Convert composite keys to indices for plotting
-                start_key_idx = filtered_keys.index(start_key)
-                
-                plot_time_development(filtered_h, filtered_keys, start_key_idx,
-                                    zoom_region, zoom_size, custom_color, show_background,
-                                    despine, time_bins, show_scale, cmap,
-                                    show_labels, show_legend, auto_zoom_margin, color_by, self.df)
-            else:
-                # neutron_id is enabled but no filter
-                if isinstance(key, tuple):
-                    # User provided a composite key like (time, neutron_id)
-                    if key not in self.keys:
-                        raise ValueError(f"Key {key} not found in data")
-                    
-                    # Extract neutron_id from the key and filter
-                    neutron_id_filter = key[1]
-                    neutron_keys = self.get_keys_for_neutron(neutron_id_filter)
-                    filtered_h = {k: v for k, v in self.h.items() if isinstance(k, tuple) and k[1] == neutron_id_filter}
-                    start_key_idx = neutron_keys.index(key)
-                    
-                    plot_time_development(filtered_h, neutron_keys, start_key_idx,
-                                        zoom_region, zoom_size, custom_color, show_background,
-                                        despine, time_bins, show_scale, cmap,
-                                        show_labels, show_legend, auto_zoom_margin, color_by, self.df)
-                elif isinstance(key, int):
-                    # User provided index - treat keys as if they were a flat list
-                    # This allows plotting across all neutrons by index
-                    if key >= len(self.keys):
-                        raise ValueError(f"key index {key} out of range. Valid range: 0-{len(self.keys)-1}")
-                    
-                    # Use the key directly as an index into the full keys list
-                    # When plotting, we need to determine which neutron this belongs to
-                    actual_key = self.keys[key]
-                    if isinstance(actual_key, tuple):
-                        neutron_id_from_key = actual_key[1]
-                        neutron_keys = self.get_keys_for_neutron(neutron_id_from_key)
-                        filtered_h = {k: v for k, v in self.h.items() if isinstance(k, tuple) and k[1] == neutron_id_from_key}
-                        start_key_idx = neutron_keys.index(actual_key)
-                        
-                        if self.verbosity:
-                            print(f"Note: Using key index {key} which corresponds to neutron_id={neutron_id_from_key}, time bin index {start_key_idx}")
-                        
-                        plot_time_development(filtered_h, neutron_keys, start_key_idx,
-                                            zoom_region, zoom_size, custom_color, show_background,
-                                            despine, time_bins, show_scale, cmap,
-                                            show_labels, show_legend, auto_zoom_margin, color_by, self.df)
-                    else:
-                        # Shouldn't happen but handle gracefully
-                        plot_time_development(self.h, self.keys, key,
-                                            zoom_region, zoom_size, custom_color, show_background,
-                                            despine, time_bins, show_scale, cmap,
-                                            show_labels, show_legend, auto_zoom_margin, color_by, self.df)
+        # Show progress bar only for verbosity >= 1
+        if verbosity >= 1:
+            iterator = tqdm(unique_bins, desc="Creating histograms")
         else:
-            # Standard plotting without neutron grouping
-            if isinstance(key, tuple):
-                raise ValueError("Composite keys only valid when neutron_id=True")
-            
-            start_key_idx = key
-            
-            plot_time_development(self.h, self.keys, start_key_idx,
-                                zoom_region, zoom_size, custom_color, show_background,
-                                despine, time_bins, show_scale, cmap,
-                                show_labels, show_legend, auto_zoom_margin, color_by, self.df)
+            iterator = unique_bins
+
+        for tbin in iterator:
+            subset = df_binned[df_binned["tbin"] == tbin]
+            if not subset.empty:
+                h[tbin], _, _ = np.histogram2d(
+                    subset["x"], subset["y"],
+                    bins=[np.arange(257), np.arange(257)]  # 0-256 inclusive
+                )
+
+        keys = sorted(h.keys())
+
+        if verbosity >= 2:
+            print(f"Created {len(keys)} histograms covering {len(df_binned)} pixels")
+
+        return h, keys
