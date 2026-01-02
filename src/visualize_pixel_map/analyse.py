@@ -38,10 +38,15 @@ class Data:
         self.end_time = end_time
         self.time_step = time_step
 
-        # Detect if input is file or folder
+        # Detect if input is file, folder, or wildcard pattern
         path = Path(data_path)
 
-        if path.is_file():
+        # Check for wildcard patterns first (before file/dir checks)
+        if '*' in str(data_path) or '[' in str(data_path):
+            # Wildcard pattern - handle in _load_from_folder
+            self.data_source = 'wildcard'
+            self.df = self._load_from_folder(path)
+        elif path.is_file():
             # Legacy behavior: load CSV file directly
             if self.verbosity >= 1:
                 print(f"Loading CSV file: {data_path}")
@@ -56,9 +61,12 @@ class Data:
 
         self.neutron_id = neutron_id
         self.has_neutron_id = 'neutron_id' in self.df.columns
-        self.has_photon_id = 'assoc_photon_id' in self.df.columns
-        self.has_event_id = 'assoc_event_id' in self.df.columns
-        self.has_tot = 'tot' in self.df.columns
+        # Support both old and new column naming conventions
+        # New format uses backslash: ph\id, ev\id, px\tot
+        # Or underscore: ph_id, ev_id, px_tot
+        self.has_photon_id = ('ph\\id' in self.df.columns or 'ph_id' in self.df.columns or 'assoc_photon_id' in self.df.columns)
+        self.has_event_id = ('ev\\id' in self.df.columns or 'ev_id' in self.df.columns or 'assoc_event_id' in self.df.columns)
+        self.has_tot = ('px\\tot' in self.df.columns or 'px_tot' in self.df.columns or 'tot' in self.df.columns)
 
         if self.verbosity >= 1:
             print(f"Loaded {len(self.df)} rows")
@@ -74,14 +82,43 @@ class Data:
         """
         Load data from a neutron data folder.
         Auto-detects AssociatedResults or runs neutron_event_analyzer if needed.
+        Supports wildcards for selecting specific files.
 
         Parameters:
-            folder_path (Path): Path to the neutron data folder.
+            folder_path (Path): Path to the neutron data folder or specific CSV file(s) with wildcards.
 
         Returns:
-            pd.DataFrame: Loaded data.
+            pd.DataFrame: Loaded data (concatenated if multiple files).
         """
         folder_path = Path(folder_path)
+
+        # Check if path contains wildcards
+        if '*' in str(folder_path) or '[' in str(folder_path):
+            # User specified wildcard pattern
+            # Get the parent directory and the pattern
+            if folder_path.is_absolute():
+                # For absolute paths, glob from the parent
+                parent = folder_path.parent
+                pattern = folder_path.name
+                csv_files = list(parent.glob(pattern))
+            else:
+                # For relative paths, glob from current directory
+                csv_files = list(Path('.').glob(str(folder_path)))
+
+            if not csv_files:
+                raise FileNotFoundError(f"No files match pattern: {folder_path}")
+
+            if self.verbosity >= 1:
+                print(f"Found {len(csv_files)} file(s) matching pattern")
+
+            # Load and concatenate all matching files
+            dfs = []
+            for csv_file in sorted(csv_files):
+                if self.verbosity >= 2:
+                    print(f"  Loading: {csv_file}")
+                dfs.append(pd.read_csv(csv_file))
+
+            return pd.concat(dfs, ignore_index=True)
 
         # Check for AssociatedResults folder
         assoc_results_dir = folder_path / "AssociatedResults"
@@ -91,13 +128,20 @@ class Data:
             csv_files = list(assoc_results_dir.glob("*.csv"))
 
             if csv_files:
-                if self.verbosity:
+                if self.verbosity >= 1:
                     print(f"Found AssociatedResults folder with {len(csv_files)} CSV file(s)")
-                # Use the first CSV file (or most recent)
-                csv_file = sorted(csv_files, key=lambda x: x.stat().st_mtime, reverse=True)[0]
-                if self.verbosity:
-                    print(f"Loading: {csv_file.name}")
-                return pd.read_csv(csv_file)
+
+                # Load and concatenate ALL CSV files
+                dfs = []
+                for csv_file in sorted(csv_files):
+                    if self.verbosity >= 2:
+                        print(f"  Loading: {csv_file.name}")
+                    dfs.append(pd.read_csv(csv_file))
+
+                if self.verbosity >= 1:
+                    print(f"Concatenating {len(dfs)} CSV file(s)")
+
+                return pd.concat(dfs, ignore_index=True)
 
         # No AssociatedResults found, check for Exported folders
         exported_folders = [
@@ -205,19 +249,81 @@ class Data:
     def _normalize_columns(self, sensor_size=8):
         """
         Detect the format and normalize column names to x, y, toa, tof.
-        Supports three formats:
+        Supports five formats:
         1. Original format: x, y, toa, tof
         2. Alternative format: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff
-        3. AssociatedResults format: x, y, t, tot, tof, assoc_photon_id, assoc_event_id, etc.
+        3. AssociatedResults format (old): x, y, t, tot, tof, assoc_photon_id, assoc_event_id, etc.
+        4. AssociatedResults format (new underscore): px_x, px_y, px_toa, px_tot, ph_id, ev_id, etc.
+        5. AssociatedResults format (new backslash): px\x, px\y, px\toa, px\tot, ph\id, ev\id, etc.
 
         Parameters:
             sensor_size (float): Size of the sensor in mm (used for normalization).
         """
         columns = self.df.columns.tolist()
 
-        # Check if this is the AssociatedResults format (has t, tot, and association columns)
-        if 't' in columns and 'tot' in columns and any('assoc_' in col for col in columns):
-            # AssociatedResults format from neutron_event_analyzer
+        # Check for NEW AssociatedResults format with backslash separator (px\*, ph\*, ev\*)
+        if any(col.startswith('px\\') for col in columns):
+            # New format with backslash - rename px\* columns to expected names
+            rename_map = {}
+
+            # Pixel columns
+            if 'px\\x' in columns:
+                rename_map['px\\x'] = 'x'
+            if 'px\\y' in columns:
+                rename_map['px\\y'] = 'y'
+            if 'px\\toa' in columns:
+                rename_map['px\\toa'] = 'toa'
+            if 'px\\tot' in columns:
+                rename_map['px\\tot'] = 'tot'
+            if 'px\\tof' in columns:
+                rename_map['px\\tof'] = 'tof'
+
+            # Photon and event columns - keep ph\id and ev\id as is
+            # (they'll be detected separately)
+
+            self.df = self.df.rename(columns=rename_map)
+
+            # Ensure tof exists (duplicate toa if not)
+            if 'tof' not in self.df.columns and 'toa' in self.df.columns:
+                self.df['tof'] = self.df['toa']
+
+            # Filter out rows with invalid time
+            self.df = self.df.loc[(self.df["toa"] >= 0)]
+            self.df = self.df.sort_values(by="toa")
+
+        # Check for NEW AssociatedResults format with underscore separator (px_*, ph_*, ev_*)
+        elif any(col.startswith('px_') for col in columns):
+            # New format with underscore - rename px_* columns to expected names
+            rename_map = {}
+
+            # Pixel columns
+            if 'px_x' in columns:
+                rename_map['px_x'] = 'x'
+            if 'px_y' in columns:
+                rename_map['px_y'] = 'y'
+            if 'px_toa' in columns:
+                rename_map['px_toa'] = 'toa'
+            if 'px_tot' in columns:
+                rename_map['px_tot'] = 'tot'
+            if 'px_tof' in columns:
+                rename_map['px_tof'] = 'tof'
+
+            # Photon and event columns - keep ph_id and ev_id as is
+            # (they'll be detected separately)
+
+            self.df = self.df.rename(columns=rename_map)
+
+            # Ensure tof exists (duplicate toa if not)
+            if 'tof' not in self.df.columns and 'toa' in self.df.columns:
+                self.df['tof'] = self.df['toa']
+
+            # Filter out rows with invalid time
+            self.df = self.df.loc[(self.df["toa"] >= 0)]
+            self.df = self.df.sort_values(by="toa")
+
+        # Check if this is the OLD AssociatedResults format (has t, tot, and association columns)
+        elif 't' in columns and 'tot' in columns and any('assoc_' in col for col in columns):
+            # AssociatedResults format from neutron_event_analyzer (old naming)
             # Rename 't' to 'toa' for consistency
             self.df = self.df.rename(columns={'t': 'toa'})
 
@@ -282,6 +388,27 @@ class Data:
                 f"(x, y, toa, tof), (x2, y2, toa2, ...), or AssociatedResults format. "
                 f"Found columns: {columns}"
             )
+    def _get_column_name(self, column_type):
+        """
+        Get the actual column name for a given type, handling both old and new naming.
+
+        Parameters:
+            column_type (str): One of 'photon_id', 'event_id', 'tot'
+
+        Returns:
+            str or None: The actual column name in the dataframe, or None if not found.
+        """
+        mapping = {
+            'photon_id': ['ph\\id', 'ph_id', 'assoc_photon_id'],
+            'event_id': ['ev\\id', 'ev_id', 'assoc_event_id'],
+            'tot': ['px\\tot', 'px_tot', 'tot']
+        }
+
+        for col in mapping.get(column_type, []):
+            if col in self.df.columns:
+                return col
+        return None
+
     # Properties for easy data inspection
     @property
     def associated_df(self):
@@ -293,7 +420,9 @@ class Data:
         """Get information about available photons."""
         if not self.has_photon_id:
             return None
-        unique_photons = self.df['assoc_photon_id'].dropna().unique()
+
+        photon_col = self._get_column_name('photon_id')
+        unique_photons = self.df[photon_col].dropna().unique()
         return {
             'count': len(unique_photons),
             'ids': sorted(unique_photons.tolist()),
@@ -305,7 +434,9 @@ class Data:
         """Get information about available events."""
         if not self.has_event_id:
             return None
-        unique_events = self.df['assoc_event_id'].dropna().unique()
+
+        event_col = self._get_column_name('event_id')
+        unique_events = self.df[event_col].dropna().unique()
         return {
             'count': len(unique_events),
             'ids': sorted(unique_events.tolist()),
@@ -517,35 +648,37 @@ class Data:
 
         # Filter by photons
         if photons is not None and self.has_photon_id:
+            photon_col = self._get_column_name('photon_id')
             photon_range, photon_ids = parse_filter(photons)
 
             if photon_range is not None:
                 # Get unique photon IDs and filter by index range
-                unique_photons = df['assoc_photon_id'].dropna().unique()
+                unique_photons = df[photon_col].dropna().unique()
                 sorted_photons = sorted(unique_photons)
                 start_idx, end_idx = photon_range
                 selected_photons = sorted_photons[start_idx:end_idx]
-                df = df[df['assoc_photon_id'].isin(selected_photons)]
+                df = df[df[photon_col].isin(selected_photons)]
                 any_filter_applied = True
 
             if photon_ids is not None:
-                df = df[df['assoc_photon_id'].isin(photon_ids)]
+                df = df[df[photon_col].isin(photon_ids)]
                 any_filter_applied = True
 
         # Filter by events
         if events is not None and self.has_event_id:
+            event_col = self._get_column_name('event_id')
             event_range, event_ids = parse_filter(events)
 
             if event_range is not None:
-                unique_events = df['assoc_event_id'].dropna().unique()
+                unique_events = df[event_col].dropna().unique()
                 sorted_events = sorted(unique_events)
                 start_idx, end_idx = event_range
                 selected_events = sorted_events[start_idx:end_idx]
-                df = df[df['assoc_event_id'].isin(selected_events)]
+                df = df[df[event_col].isin(selected_events)]
                 any_filter_applied = True
 
             if event_ids is not None:
-                df = df[df['assoc_event_id'].isin(event_ids)]
+                df = df[df[event_col].isin(event_ids)]
                 any_filter_applied = True
 
         # Filter by pixels (index in dataframe)
