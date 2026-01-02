@@ -8,8 +8,81 @@ import visualize_pixel_map as vpm
 # Simple: just point to your data folder
 data = vpm.Data("data/neutrons")
 
+# Check what data is available
+data.info()
+
 # Plot with default settings
 data.plot()
+```
+
+## Inspecting Your Data
+
+### Get Summary Information
+
+```python
+# Print comprehensive summary
+data.info()
+```
+
+Output:
+```
+============================================================
+Data Summary
+============================================================
+Total pixel hits: 98426
+Data source: folder
+
+Time range: 0.000000 - 0.010000 s
+Time bins: 1000
+
+Photons: 1234
+  ID range: 0.0 - 1233.0
+
+Events: 56
+  ID range: 0.0 - 55.0
+
+Available columns: x, y, toa, tot, tof, assoc_photon_id, ...
+============================================================
+```
+
+### Check Available Ranges
+
+```python
+# Check photon information
+print(data.photons)
+# {'count': 1234, 'ids': [0, 1, 2, ...], 'range': (0.0, 1233.0)}
+
+# Check event information
+print(data.events)
+# {'count': 56, 'ids': [0, 1, 2, ...], 'range': (0.0, 55.0)}
+
+# Check pixel information
+print(data.pixels)
+# {'count': 98426, 'range': (0, 98425)}
+
+# Check time information
+print(data.times)
+# {'range': (0.0, 0.01), 'bins': 1000, 'bin_keys': [0.0, 1e-8, ...]}
+
+# Check neutron information (if available)
+print(data.neutrons)
+# {'count': 10, 'ids': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9]}
+```
+
+### Access the DataFrame Directly
+
+```python
+# Access the full associated dataframe
+df = data.associated_df
+
+# Now you can do pandas operations
+print(df.head())
+print(df.columns)
+print(df.describe())
+
+# Filter and analyze
+high_tot = df[df['tot'] > 100]
+print(f"High TOT pixels: {len(high_tot)}")
 ```
 
 ## Simplified Filtering API

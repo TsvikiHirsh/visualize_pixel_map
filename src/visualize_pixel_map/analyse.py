@@ -53,6 +53,7 @@ class Data:
         self.has_neutron_id = 'neutron_id' in self.df.columns
         self.has_photon_id = 'assoc_photon_id' in self.df.columns
         self.has_event_id = 'assoc_event_id' in self.df.columns
+        self.has_tot = 'tot' in self.df.columns
 
         if self.verbosity:
             print(f"Loaded {len(self.df)} rows")
@@ -365,17 +366,104 @@ class Data:
     def get_keys_for_neutron(self, neutron_id):
         """
         Get all time bin keys for a specific neutron.
-        
+
         Parameters:
             neutron_id (int): The neutron ID to filter by.
-        
+
         Returns:
             list: List of keys (time bins) for the specified neutron.
         """
         if not self.neutron_id or not self.has_neutron_id:
             raise ValueError("neutron_id grouping was not enabled during initialization")
-        
+
         return [key for key in self.keys if isinstance(key, tuple) and key[1] == neutron_id]
+
+    # Properties for easy data inspection
+    @property
+    def associated_df(self):
+        """Access the underlying dataframe with all data including associations."""
+        return self.df
+
+    @property
+    def photons(self):
+        """Get information about available photons."""
+        if not self.has_photon_id:
+            return None
+        unique_photons = self.df['assoc_photon_id'].dropna().unique()
+        return {
+            'count': len(unique_photons),
+            'ids': sorted(unique_photons.tolist()),
+            'range': (unique_photons.min(), unique_photons.max()) if len(unique_photons) > 0 else (None, None)
+        }
+
+    @property
+    def events(self):
+        """Get information about available events."""
+        if not self.has_event_id:
+            return None
+        unique_events = self.df['assoc_event_id'].dropna().unique()
+        return {
+            'count': len(unique_events),
+            'ids': sorted(unique_events.tolist()),
+            'range': (unique_events.min(), unique_events.max()) if len(unique_events) > 0 else (None, None)
+        }
+
+    @property
+    def pixels(self):
+        """Get information about available pixel hits."""
+        return {
+            'count': len(self.df),
+            'range': (0, len(self.df) - 1)
+        }
+
+    @property
+    def times(self):
+        """Get information about time range in the data."""
+        if 'toa' not in self.df.columns or len(self.df) == 0:
+            return None
+        return {
+            'range': (self.df['toa'].min(), self.df['toa'].max()),
+            'bins': len(self.keys),
+            'bin_keys': self.keys[:10] if len(self.keys) > 10 else self.keys  # Show first 10
+        }
+
+    @property
+    def neutrons(self):
+        """Get information about available neutrons."""
+        if not self.has_neutron_id:
+            return None
+        unique_neutrons = self.df['neutron_id'].dropna().unique()
+        return {
+            'count': len(unique_neutrons),
+            'ids': sorted(unique_neutrons.tolist())
+        }
+
+    def info(self):
+        """Print summary information about the data."""
+        print("=" * 60)
+        print("Data Summary")
+        print("=" * 60)
+        print(f"Total pixel hits: {len(self.df)}")
+        print(f"Data source: {self.data_source}")
+
+        if self.times:
+            print(f"\nTime range: {self.times['range'][0]:.6f} - {self.times['range'][1]:.6f} s")
+            print(f"Time bins: {self.times['bins']}")
+
+        if self.photons:
+            print(f"\nPhotons: {self.photons['count']}")
+            print(f"  ID range: {self.photons['range'][0]} - {self.photons['range'][1]}")
+
+        if self.events:
+            print(f"\nEvents: {self.events['count']}")
+            print(f"  ID range: {self.events['range'][0]} - {self.events['range'][1]}")
+
+        if self.neutrons:
+            print(f"\nNeutrons: {self.neutrons['count']}")
+            print(f"  IDs: {self.neutrons['ids'][:10]}" + ("..." if self.neutrons['count'] > 10 else ""))
+
+        print(f"\nAvailable columns: {', '.join(self.df.columns.tolist())}")
+        print("=" * 60)
 
     def plot(self, key=None, neutron_id_filter=None,
              photons=None, pixels=None, events=None,
@@ -572,9 +660,29 @@ class Data:
         """
         from visualize_pixel_map.visualize import plot_time_development
 
+        # Validate we have data to plot
+        if len(self.keys) == 0:
+            raise ValueError(
+                "No data to plot. The filtered data resulted in no time bins. "
+                "Try adjusting your filter parameters or check data.info() for available ranges."
+            )
+
+        if len(self.df) == 0:
+            raise ValueError(
+                "No pixel hits to plot. The filtered data is empty. "
+                "Check data.info() for available ranges."
+            )
+
         # Determine the starting key
         if key is None:
             key = 0
+
+        # Validate key index
+        if isinstance(key, int) and key >= len(self.keys):
+            raise ValueError(
+                f"key={key} is out of range. Valid range: 0-{len(self.keys)-1}. "
+                f"Total time bins: {len(self.keys)}"
+            )
 
         # Handle neutron_id filtering or when using composite keys
         if self.neutron_id and self.has_neutron_id:
