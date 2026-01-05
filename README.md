@@ -224,11 +224,13 @@ data = vpm.Data("data/neutrons", settings=settings)
 visualize_pixel_map supports both old and new AssociatedResults formats:
 
 #### New Format (v2.0+)
-Prefix-based naming from neutron_event_analyzer:
-- **Pixel columns**: `px_x`, `px_y`, `px_toa`, `px_tot`, `px_tof`
-- **Photon columns**: `ph_id`, `ph_toa`, `ph_x`, `ph_y`
-- **Event columns**: `ev_id`, `ev_toa`, `ev_x`, `ev_y`
-- **Association columns**: `px_ph_time_diff_ns`, `px_ph_spatial_diff_px`, etc.
+Prefix-based naming from neutron_event_analyzer (supports both `\` and `_` separators):
+- **Pixel columns**: `px\x`, `px\y`, `px\toa`, `px\tot`, `px\tof` (or `px_x`, `px_y`, etc.)
+- **Photon columns**: `ph\id`, `ph\toa`, `ph\x`, `ph\y` (or `ph_id`, `ph_toa`, etc.)
+- **Event columns**: `ev\id`, `ev\toa`, `ev\x`, `ev\y` (or `ev_id`, `ev_toa`, etc.)
+- **Association columns**: `px\dt`, `px\dr`, etc. (or `px_dt`, `px_dr`, etc.)
+
+**Note**: The backslash (`\`) separator is the default in neutron_event_analyzer output.
 
 #### Old Format (v1.x)
 Legacy naming convention:

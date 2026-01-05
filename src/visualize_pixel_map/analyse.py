@@ -247,7 +247,7 @@ class Data:
         return analyser.get_combined_dataframe()
     
     def _normalize_columns(self, sensor_size=8):
-        """
+        r"""
         Detect the format and normalize column names to x, y, toa, tof.
         Supports five formats:
         1. Original format: x, y, toa, tof
