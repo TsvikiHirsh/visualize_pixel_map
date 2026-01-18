@@ -157,6 +157,35 @@ data.plot(color_by='toa', cmap='viridis')
 data.plot(color_by='tot', cmap='plasma')
 ```
 
+#### Color by Photon or Event ID
+
+```python
+# Color by photon ID (discrete colors)
+data.plot(
+    photons=(0, 20),
+    color_by='photons',
+    cmap='tab20',
+    show_legend=True
+)
+
+# Color by event ID (discrete colors)
+data.plot(
+    events=(0, 10),
+    color_by='events',
+    cmap='viridis',
+    show_legend=True
+)
+
+# Show non-associated pixels as gray (default: filtered out)
+data.plot(
+    photons=(1, 20),
+    color_by='events',
+    cmap='viridis',
+    show_assoc=False,    # Show non-associated pixels in gray
+    show_legend=True     # Legend includes "Not associated"
+)
+```
+
 #### Zoom and Display Options
 
 ```python
@@ -342,11 +371,10 @@ data.plot(
     events=None,             # Filter by events (tuple/list/int/slice)
     toa_range=None,          # Filter by TOA (tuple: min, max)
     query=None,              # Pandas query string
-    color_by='toa',          # 'toa' or 'tot'
+    color_by='toa',          # 'toa', 'tot', 'photon'/'photons', 'event'/'events'
+    show_assoc=True,         # Filter non-associated pixels when using photon/event coloring
     zoom_region=None,        # (x_min, x_max, y_min, y_max)
     zoom_size=None,          # Square zoom size
-    custom_color=None,       # Custom colormap (deprecated, use cmap)
-    show_background=False,   # Show background pixels
     despine=True,            # Remove plot spines
     time_bins=None,          # Max time in ns
     show_scale=False,        # Show pixel scale

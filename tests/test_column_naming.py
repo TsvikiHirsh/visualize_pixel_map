@@ -93,7 +93,7 @@ class TestColumnNaming:
             assert data.events['count'] > 0
 
     def test_new_column_naming(self):
-        """Test that new column naming (prefix-based with underscore) is correctly detected and normalized."""
+        """Test that new column naming (prefix-based with underscore) is correctly detected and preserved."""
         with tempfile.TemporaryDirectory() as tmpdir:
             csv_path = Path(tmpdir) / "data_new.csv"
             self.create_new_format_csv(csv_path, separator='_')
@@ -101,11 +101,11 @@ class TestColumnNaming:
             # Load data
             data = Data(str(csv_path), verbosity=0)
 
-            # Check that px_* columns were renamed to expected names
-            assert 'x' in data.df.columns
-            assert 'y' in data.df.columns
-            assert 'toa' in data.df.columns
-            assert 'tot' in data.df.columns
+            # Check that px_* columns are PRESERVED (not renamed)
+            assert 'px_x' in data.df.columns
+            assert 'px_y' in data.df.columns
+            assert 'px_toa' in data.df.columns
+            assert 'px_tot' in data.df.columns
 
             # Check that ph_id and ev_id are present
             assert 'ph_id' in data.df.columns or 'assoc_photon_id' in data.df.columns
@@ -123,7 +123,7 @@ class TestColumnNaming:
             assert data.events['count'] > 0
 
     def test_new_column_naming_backslash(self):
-        """Test that new column naming (prefix-based with backslash) is correctly detected and normalized."""
+        """Test that new column naming (prefix-based with backslash) is correctly detected and preserved."""
         with tempfile.TemporaryDirectory() as tmpdir:
             csv_path = Path(tmpdir) / "data_new_backslash.csv"
             self.create_new_format_csv(csv_path, separator='\\')
@@ -131,11 +131,11 @@ class TestColumnNaming:
             # Load data
             data = Data(str(csv_path), verbosity=0)
 
-            # Check that px\* columns were renamed to expected names
-            assert 'x' in data.df.columns
-            assert 'y' in data.df.columns
-            assert 'toa' in data.df.columns
-            assert 'tot' in data.df.columns
+            # Check that px\* columns are PRESERVED (not renamed)
+            assert 'px\\x' in data.df.columns
+            assert 'px\\y' in data.df.columns
+            assert 'px\\toa' in data.df.columns
+            assert 'px\\tot' in data.df.columns
 
             # Check that ph\id and ev\id are present
             assert 'ph\\id' in data.df.columns or 'assoc_photon_id' in data.df.columns

@@ -156,6 +156,41 @@ data.plot(
 )
 ```
 
+### Photon ID Coloring
+
+```python
+# Color by photon ID (discrete colors for each photon)
+data.plot(
+    photons=(0, 20),           # Filter to first 20 photons
+    color_by='photons',        # or 'photon'
+    cmap='viridis',
+    show_labels=False,         # Hide labels to avoid clutter
+    show_legend=True          # Show legend with photon IDs
+)
+```
+
+### Event ID Coloring
+
+```python
+# Color by event ID (discrete colors for each event)
+data.plot(
+    events=(0, 10),            # Filter to first 10 events
+    color_by='events',         # or 'event'
+    cmap='tab20',              # Good for discrete categorical data
+    show_labels=False,
+    show_legend=True          # Legend shows "Event 1", "Event 2", etc.
+)
+
+# Show non-associated pixels as gray
+data.plot(
+    photons=(1, 20),           # Filter to photons 1-20
+    color_by='events',
+    cmap='viridis',
+    show_assoc=False,          # Show ALL pixels, including non-associated
+    show_legend=True          # Legend includes "Not associated" in gray
+)
+```
+
 ## Combined Filters
 
 ```python
@@ -243,6 +278,86 @@ data = vpm.Data("data/pixel_data.csv")
 data.plot(key=800, cmap='viridis')
 ```
 
+## Troubleshooting
+
+### All Pixels Have Same Color When Using Event/Photon Coloring
+
+If you see all pixels with the same color when using `color_by='events'` or `color_by='photons'`, this likely means:
+
+1. **All filtered pixels belong to the same event/photon**:
+   ```python
+   # Check how many unique events are in your filtered data
+   filtered_df = data._apply_filters(photons=(1, 20), verbosity=0)
+   print(f"Unique events: {filtered_df[data._get_column_name('event_id')].nunique()}")
+   ```
+
+2. **Your filter is too restrictive**:
+   ```python
+   # Try expanding the filter range
+   data.plot(
+       photons=(0, 100),      # Wider range
+       color_by='events',
+       show_legend=True
+   )
+   ```
+
+3. **Event/photon association might not be working correctly**:
+   ```python
+   # Check if association data is present
+   data.info()  # Look for "Events:" and "Photons:" in output
+   ```
+
+### Gray Blobs Instead of Colors
+
+If you see gray blobs instead of colors:
+
+1. **Make sure you specify a colormap**:
+   ```python
+   # This will give you gray blobs (no colormap)
+   data.plot(color_by='events')
+
+   # This will give you colors
+   data.plot(color_by='events', cmap='viridis')
+   ```
+
+2. **Non-associated pixels are shown in gray by default with show_assoc=False**:
+   ```python
+   # If you see gray pixels, they might be non-associated
+   # By default, non-associated pixels are filtered out (show_assoc=True)
+   # To see them as gray:
+   data.plot(
+       photons=(1, 20),
+       color_by='events',
+       cmap='viridis',
+       show_assoc=False,      # Show non-associated pixels in gray
+       show_legend=True       # Legend will show "Not associated"
+   )
+
+   # To hide non-associated pixels (default):
+   data.plot(
+       photons=(1, 20),
+       color_by='events',
+       cmap='viridis',
+       show_assoc=True,       # Default - filters out non-associated pixels
+       show_legend=True
+   )
+   ```
+
+3. **Check that the data has the required columns**:
+   ```python
+   # Verify photon/event ID columns exist
+   print(data.has_photon_id)  # Should be True for photon coloring
+   print(data.has_event_id)   # Should be True for event coloring
+   ```
+
+### Legend Shows Wrong Values
+
+The legend automatically adapts based on `color_by`:
+- `color_by='toa'`: Shows time bins (e.g., "10 ns", "20 ns")
+- `color_by='tot'`: Shows TOT values
+- `color_by='photons'`: Shows "Photon 0", "Photon 1", etc.
+- `color_by='events'`: Shows "Event 0", "Event 1", etc.
+
 ## All Available Parameters
 
 ```python
@@ -257,9 +372,9 @@ data.plot(
     toa_range=None,            # (min, max) in seconds
 
     # Coloring
-    color_by='toa',            # 'toa' or 'tot'
+    color_by='toa',            # 'toa', 'tot', 'photon'/'photons', 'event'/'events'
+    show_assoc=True,           # When using photon/event coloring, filter non-associated pixels
     cmap=None,                 # Matplotlib colormap
-    custom_color=None,         # Deprecated
 
     # Zoom and display
     zoom_region=None,          # (x_min, x_max, y_min, y_max)

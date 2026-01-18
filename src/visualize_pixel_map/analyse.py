@@ -248,13 +248,15 @@ class Data:
     
     def _normalize_columns(self, sensor_size=8):
         r"""
-        Detect the format and normalize column names to x, y, toa, tof.
+        Detect the format and handle column naming.
         Supports five formats:
         1. Original format: x, y, toa, tof
         2. Alternative format: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff
         3. AssociatedResults format (old): x, y, t, tot, tof, assoc_photon_id, assoc_event_id, etc.
         4. AssociatedResults format (new underscore): px_x, px_y, px_toa, px_tot, ph_id, ev_id, etc.
         5. AssociatedResults format (new backslash): px\x, px\y, px\toa, px\tot, ph\id, ev\id, etc.
+
+        NEW: Preserves original column names (px\x, px_x, etc.) instead of renaming.
 
         Parameters:
             sensor_size (float): Size of the sensor in mm (used for normalization).
@@ -263,63 +265,37 @@ class Data:
 
         # Check for NEW AssociatedResults format with backslash separator (px\*, ph\*, ev\*)
         if any(col.startswith('px\\') for col in columns):
-            # New format with backslash - rename px\* columns to expected names
-            rename_map = {}
-
-            # Pixel columns
-            if 'px\\x' in columns:
-                rename_map['px\\x'] = 'x'
-            if 'px\\y' in columns:
-                rename_map['px\\y'] = 'y'
-            if 'px\\toa' in columns:
-                rename_map['px\\toa'] = 'toa'
-            if 'px\\tot' in columns:
-                rename_map['px\\tot'] = 'tot'
-            if 'px\\tof' in columns:
-                rename_map['px\\tof'] = 'tof'
-
-            # Photon and event columns - keep ph\id and ev\id as is
-            # (they'll be detected separately)
-
-            self.df = self.df.rename(columns=rename_map)
-
+            # New format with backslash - KEEP original column names
             # Ensure tof exists (duplicate toa if not)
-            if 'tof' not in self.df.columns and 'toa' in self.df.columns:
-                self.df['tof'] = self.df['toa']
+            toa_col = self._get_column_name('toa')
+            tof_col = self._get_column_name('tof')
+
+            if tof_col is None and toa_col is not None:
+                # Create tof column as duplicate of toa with same naming convention
+                if 'px\\toa' in columns:
+                    self.df['px\\tof'] = self.df['px\\toa']
 
             # Filter out rows with invalid time
-            self.df = self.df.loc[(self.df["toa"] >= 0)]
-            self.df = self.df.sort_values(by="toa")
+            if toa_col is not None:
+                self.df = self.df.loc[(self.df[toa_col] >= 0)]
+                self.df = self.df.sort_values(by=toa_col)
 
         # Check for NEW AssociatedResults format with underscore separator (px_*, ph_*, ev_*)
         elif any(col.startswith('px_') for col in columns):
-            # New format with underscore - rename px_* columns to expected names
-            rename_map = {}
-
-            # Pixel columns
-            if 'px_x' in columns:
-                rename_map['px_x'] = 'x'
-            if 'px_y' in columns:
-                rename_map['px_y'] = 'y'
-            if 'px_toa' in columns:
-                rename_map['px_toa'] = 'toa'
-            if 'px_tot' in columns:
-                rename_map['px_tot'] = 'tot'
-            if 'px_tof' in columns:
-                rename_map['px_tof'] = 'tof'
-
-            # Photon and event columns - keep ph_id and ev_id as is
-            # (they'll be detected separately)
-
-            self.df = self.df.rename(columns=rename_map)
-
+            # New format with underscore - KEEP original column names
             # Ensure tof exists (duplicate toa if not)
-            if 'tof' not in self.df.columns and 'toa' in self.df.columns:
-                self.df['tof'] = self.df['toa']
+            toa_col = self._get_column_name('toa')
+            tof_col = self._get_column_name('tof')
+
+            if tof_col is None and toa_col is not None:
+                # Create tof column as duplicate of toa with same naming convention
+                if 'px_toa' in columns:
+                    self.df['px_tof'] = self.df['px_toa']
 
             # Filter out rows with invalid time
-            self.df = self.df.loc[(self.df["toa"] >= 0)]
-            self.df = self.df.sort_values(by="toa")
+            if toa_col is not None:
+                self.df = self.df.loc[(self.df[toa_col] >= 0)]
+                self.df = self.df.sort_values(by=toa_col)
 
         # Check if this is the OLD AssociatedResults format (has t, tot, and association columns)
         elif 't' in columns and 'tot' in columns and any('assoc_' in col for col in columns):
@@ -393,15 +369,19 @@ class Data:
         Get the actual column name for a given type, handling both old and new naming.
 
         Parameters:
-            column_type (str): One of 'photon_id', 'event_id', 'tot'
+            column_type (str): One of 'x', 'y', 'toa', 'tof', 'tot', 'photon_id', 'event_id'
 
         Returns:
             str or None: The actual column name in the dataframe, or None if not found.
         """
         mapping = {
+            'x': ['px\\x', 'px_x', 'x', 'x2'],
+            'y': ['px\\y', 'px_y', 'y', 'y2'],
+            'toa': ['px\\toa', 'px_toa', 'toa', 'toa2', 't'],
+            'tof': ['px\\tof', 'px_tof', 'tof'],
+            'tot': ['px\\tot', 'px_tot', 'tot'],
             'photon_id': ['ph\\id', 'ph_id', 'assoc_photon_id'],
-            'event_id': ['ev\\id', 'ev_id', 'assoc_event_id'],
-            'tot': ['px\\tot', 'px_tot', 'tot']
+            'event_id': ['ev\\id', 'ev_id', 'assoc_event_id']
         }
 
         for col in mapping.get(column_type, []):
@@ -454,7 +434,8 @@ class Data:
     @property
     def times(self):
         """Get information about time range in the data."""
-        if 'toa' not in self.df.columns or len(self.df) == 0:
+        toa_col = self._get_column_name('toa')
+        if toa_col is None or len(self.df) == 0:
             return None
 
         # Calculate expected number of bins
@@ -462,7 +443,7 @@ class Data:
         expected_bins = int((self.end_time - self.start_time) / time_step_sec)
 
         return {
-            'range': (self.df['toa'].min(), self.df['toa'].max()),
+            'range': (self.df[toa_col].min(), self.df[toa_col].max()),
             'default_bins': expected_bins,
             'bin_width_ns': self.time_step
         }
@@ -508,9 +489,9 @@ class Data:
     def plot(self, key=None, neutron_id_filter=None,
              photons=None, pixels=None, events=None,
              toa_range=None, query=None,
-             color_by='toa',
-             zoom_region=None, zoom_size=None,
-             custom_color=None, show_background=False, despine=True,
+             color_by='toa', show_assoc=True,
+             low=None, high=None, step=None,
+             zoom_region=None, zoom_size=None, despine=True,
              time_bins=None, show_scale=False, cmap=None,
              show_labels=True, show_legend=False, auto_zoom_margin=5,
              verbosity=None):
@@ -537,18 +518,27 @@ class Data:
                    - slice(0, 5): slice object
             toa_range (tuple): (min_toa, max_toa) in seconds to filter by time of arrival.
             query (str): Pandas query string to filter data (e.g., "tot > 50 & x < 128").
-            color_by (str): 'toa' or 'tot' - which parameter to use for colormap.
+            color_by (str): Which parameter to use for colormap. Options:
+                          - 'toa' (default): Color by time of arrival
+                          - 'tot': Color by time over threshold (energy)
+                          - 'photon' or 'photons': Color by photon ID
+                          - 'event' or 'events': Color by event ID
+                          - Any column name from dataframe: Color by custom column
+            show_assoc (bool): When using photon/event coloring, only show associated pixels (default: True).
+                             If False, non-associated pixels are shown in gray and labeled "Not associated".
+            low (float): Minimum value for custom binning (used with high and step).
+            high (float): Maximum value for custom binning (used with low and step).
+            step (float): Step size for custom binning (used with low and high).
+                         Example: low=1, high=8, step=1 creates bins [1, 2, 3, 4, 5, 6, 7, 8].
             zoom_region (tuple): (x_min, x_max, y_min, y_max) for zoom region.
             zoom_size (int): If provided, creates a square zoom region of this size around CoG.
-            custom_color (str): Custom color map for plotting (deprecated, use cmap).
-            show_background (bool): Whether to show background pixels.
-            despine (bool): Whether to remove plot spines.
+            despine (bool): Whether to remove plot spines (default: True).
             time_bins: maximum time in nanoseconds (e.g., 40 for [10, 20, 30, 40]).
-            show_scale (bool): Whether to show scale on the plot.
+            show_scale (bool): Whether to show scale on the plot (default: False).
             cmap (str): Colormap to use for the plot.
-            show_labels (bool): Whether to display timestamp text labels on pixels.
-            show_legend (bool): Whether to display a legend with timestamp colors.
-            auto_zoom_margin (int): Margin in pixels around data when auto-zooming.
+            show_labels (bool): Whether to display timestamp text labels on pixels (default: True).
+            show_legend (bool): Whether to display a legend with timestamp colors and title (default: False).
+            auto_zoom_margin (int): Margin in pixels around data when auto-zooming (default: 5).
             verbosity (int): Override instance verbosity. 0=QUIET, 1=BASIC, 2=ADVANCED.
         """
         from visualize_pixel_map.visualize import plot_time_development
@@ -570,6 +560,20 @@ class Data:
         # Use filtered data or original if no filters applied
         plot_df = filtered_df if filtered_df is not None else self.df
 
+        # If using photon/event coloring with show_assoc=True, filter out non-associated pixels
+        if show_assoc and color_by in ['photon', 'photons', 'event', 'events']:
+            if color_by in ['photon', 'photons']:
+                assoc_col = self._get_column_name('photon_id')
+            else:  # events
+                assoc_col = self._get_column_name('event_id')
+
+            if assoc_col is not None:
+                original_len = len(plot_df)
+                plot_df = plot_df[plot_df[assoc_col].notna()].copy()
+                if verb >= 2:
+                    filtered_out = original_len - len(plot_df)
+                    print(f"Filtered out {filtered_out} non-associated pixels (show_assoc=True)")
+
         if len(plot_df) == 0:
             raise ValueError(
                 "No pixel hits to plot after filtering. "
@@ -579,20 +583,33 @@ class Data:
         # Step 2: Create histograms from filtered data
         time_step_sec = self.time_step * 1e-9
 
+        # Get actual column name for toa
+        toa_col = self._get_column_name('toa')
+
         # Determine time range for histograms
         if toa_range is not None:
             hist_start, hist_end = toa_range
         else:
-            hist_start = max(self.start_time, plot_df['toa'].min())
-            hist_end = min(self.end_time, plot_df['toa'].max())
+            hist_start = max(self.start_time, plot_df[toa_col].min())
+            hist_end = min(self.end_time, plot_df[toa_col].max())
 
         bins = np.arange(hist_start, hist_end + time_step_sec, time_step_sec)
 
         if len(bins) < 2:
-            raise ValueError(
-                f"Not enough time bins for the data. "
-                f"Data TOA range: {plot_df['toa'].min():.6f} - {plot_df['toa'].max():.6f}s"
-            )
+            # Data has very narrow time range (e.g., single event)
+            # Expand range slightly to ensure at least 2 bins
+            if hist_start == hist_end:
+                hist_start = hist_start - time_step_sec
+                hist_end = hist_end + time_step_sec
+            else:
+                # Expand by 10% on each side
+                range_width = hist_end - hist_start
+                hist_start = hist_start - range_width * 0.1
+                hist_end = hist_end + range_width * 0.1
+            bins = np.arange(hist_start, hist_end + time_step_sec, time_step_sec)
+
+            if verb >= 1:
+                print(f"Note: Narrow time range detected. Expanded bins to cover {hist_start:.6f} - {hist_end:.6f}s")
 
         h, keys = self._create_histograms(plot_df, bins, verbosity=verb)
 
@@ -606,11 +623,37 @@ class Data:
                 f"Total time bins: {len(keys)}"
             )
 
+        # Determine the column name for coloring
+        color_column = None
+        if color_by in ['photon', 'photons']:
+            color_column = self._get_column_name('photon_id')
+            if color_column is None:
+                raise ValueError("Photon coloring requested but no photon ID column found")
+        elif color_by in ['event', 'events']:
+            color_column = self._get_column_name('event_id')
+            if color_column is None:
+                raise ValueError("Event coloring requested but no event ID column found")
+        elif color_by == 'tot':
+            color_column = self._get_column_name('tot')  # Use helper to find the right column name
+            if color_column is None:
+                raise ValueError("TOT coloring requested but no TOT column found")
+        elif color_by != 'toa':
+            # Custom column coloring - check if the column exists
+            if color_by in plot_df.columns:
+                color_column = color_by
+            else:
+                raise ValueError(f"Column '{color_by}' not found in dataframe. "
+                               f"Available columns: {', '.join(plot_df.columns)}")
+
+        # Get column names for x and y to pass to visualization
+        x_col = self._get_column_name('x')
+        y_col = self._get_column_name('y')
+
         return plot_time_development(
             h, keys, key,
-            zoom_region, zoom_size, custom_color, show_background,
-            despine, time_bins, show_scale, cmap,
-            show_labels, show_legend, auto_zoom_margin, color_by, plot_df
+            zoom_region, zoom_size, despine, time_bins, show_scale, cmap,
+            show_labels, show_legend, auto_zoom_margin, color_by, plot_df, color_column,
+            show_assoc, low, high, step, x_col, y_col
         )
 
     def _apply_filters(self, photons=None, pixels=None, events=None,
@@ -696,8 +739,9 @@ class Data:
 
         # Filter by TOA range
         if toa_range is not None:
+            toa_col = self._get_column_name('toa')
             min_toa, max_toa = toa_range
-            df = df[(df['toa'] >= min_toa) & (df['toa'] <= max_toa)]
+            df = df[(df[toa_col] >= min_toa) & (df[toa_col] <= max_toa)]
             any_filter_applied = True
             if verbosity >= 2:
                 print(f"  - TOA range filter: {len(df)} rows remain")
@@ -741,10 +785,15 @@ class Data:
 
         h = {}
 
+        # Get actual column names
+        toa_col = self._get_column_name('toa')
+        x_col = self._get_column_name('x')
+        y_col = self._get_column_name('y')
+
         # Create time bins
         df_copy = df.copy()
-        df_copy["tbin"] = pd.cut(df_copy["toa"], bins, labels=bins[:-1], include_lowest=True)
-        df_binned = df_copy.query("toa < @bins[-1]")
+        df_copy["tbin"] = pd.cut(df_copy[toa_col], bins, labels=bins[:-1], include_lowest=True)
+        df_binned = df_copy[df_copy[toa_col] < bins[-1]]
 
         if len(df_binned) == 0:
             if verbosity >= 1:
@@ -763,7 +812,7 @@ class Data:
             subset = df_binned[df_binned["tbin"] == tbin]
             if not subset.empty:
                 h[tbin], _, _ = np.histogram2d(
-                    subset["x"], subset["y"],
+                    subset[x_col], subset[y_col],
                     bins=[np.arange(257), np.arange(257)]  # 0-256 inclusive
                 )
 

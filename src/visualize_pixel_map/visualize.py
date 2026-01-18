@@ -262,10 +262,10 @@ def create_pixel_boundary_envelope(cluster_pixels):
     return create_grid_envelope(cluster_pixels)
 
 def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_size=None,
-                         custom_color=None, show_background=False, despine=True,
-                         time_bins=None, show_scale=False, cmap=None,
+                         despine=True, time_bins=None, show_scale=False, cmap=None,
                          show_labels=True, show_legend=False, auto_zoom_margin=5,
-                         color_by='toa', df=None):
+                         color_by='toa', df=None, color_column=None, show_assoc=True,
+                         low=None, high=None, step=None, x_col='x', y_col='y'):
     """
     Clean publication-ready plot of pixel hit time development with envelope contours.
 
@@ -275,8 +275,6 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
     start_key_idx: starting index for the time bins
     zoom_region: tuple (x_min, x_max, y_min, y_max) for zoom region, or None for auto
     zoom_size: if provided, creates a square region of this size around CoG (overrides auto zoom)
-    custom_color: string color name (e.g., 'red', 'blue') or None for grayscale (deprecated, use cmap)
-    show_background: whether to show the background histogram
     despine: whether to remove axes spines (default True)
     time_bins: maximum time in nanoseconds (e.g., 40 for [10, 20, 30, 40], 60 for [10, 20, 30, 40, 50, 60]),
                or None for default [10, 20, 30, 40]
@@ -285,8 +283,16 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
     show_labels: whether to display timestamp text labels on pixels (default True)
     show_legend: whether to display a legend with timestamp colors (default False)
     auto_zoom_margin: margin in pixels around data when auto-zooming (only used if zoom_size not set)
-    color_by: 'toa' or 'tot' - which parameter to use for colormap (default 'toa')
-    df: pandas DataFrame with pixel data (required if color_by='tot')
+    color_by: which parameter to use for colormap (default 'toa')
+              Options: 'toa', 'tot', 'photon'/'photons', 'event'/'events', or any column name from dataframe
+    df: pandas DataFrame with pixel data (required for attribute-based coloring)
+    color_column: column name to use for coloring (automatically determined from color_by)
+    show_assoc: when using photon/event coloring, whether to show non-associated pixels in gray (default True)
+    low: minimum value for custom binning (used with high and step)
+    high: maximum value for custom binning (used with low and step)
+    step: step size for custom binning (used with low and high)
+    x_col: column name for x coordinates (default 'x')
+    y_col: column name for y coordinates (default 'y')
 
     Returns:
     Tuple of (fig, ax)
@@ -307,6 +313,13 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
     if time_bins is None:
         time_bins_max = 40
     else:
+        # Validate that time_bins is an integer
+        if not isinstance(time_bins, (int, np.integer)):
+            raise TypeError(
+                f"time_bins must be an integer (e.g., 60 for time axis up to 60ns), "
+                f"got {type(time_bins).__name__}: {time_bins}. "
+                f"If you want to control binning for color_by values, use 'low', 'high', 'step' parameters instead."
+            )
         time_bins_max = time_bins
     num_bins = time_bins_max // 10
     
@@ -335,48 +348,61 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
     x_min, x_max, y_min, y_max = zoom_region
     ax.set_xlim(x_min, x_max)
     ax.set_ylim(y_min, y_max)
-    
-    if show_background:
-        combined_hist = np.zeros_like(h[keys[start_key_idx]], dtype=float)
-        for i in range(num_bins):
-            if start_key_idx + i < len(keys):
-                combined_hist += (i + 1) * h[keys[start_key_idx + i]]
-        ax.imshow(combined_hist, cmap=cmap if cmap else "gray", origin="lower", alpha=0.3)
-    
-    # Check if we can use TOT coloring
-    use_tot_coloring = (color_by == 'tot' and df is not None and 'tot' in df.columns)
+
+    # Check if we're using attribute-based coloring (tot, photon, event, or custom column)
+    use_attribute_coloring = (color_by != 'toa' and
+                              df is not None and color_column is not None and color_column in df.columns)
 
     # Define time bins based on maximum time
     time_bins_list = [{'time': t, 'face_color': str(t/100), 'edge_color': '0.1', 'alpha': 0.6 + 0.3 * (t/100)}
                       for t in range(10, time_bins_max + 1, 10)]
 
-    # Prepare TOT-based coloring if requested
-    if use_tot_coloring:
-        # Get TOT range for normalization
-        tot_values = df['tot'].dropna()
-        if len(tot_values) > 0:
-            tot_min, tot_max = tot_values.min(), tot_values.max()
-            tot_norm = plt.Normalize(tot_min, tot_max)
-            # We'll apply colors per-cluster based on actual TOT values
+    # Prepare attribute-based coloring if requested
+    if use_attribute_coloring:
+        # Get value range for normalization
+        attr_values = df[color_column].dropna()
+        if len(attr_values) > 0:
+            # Use custom binning if provided (low, high, step)
+            if low is not None and high is not None and step is not None:
+                # Custom binning control
+                attr_min, attr_max = low, high
+                # For discrete binning with specified step
+                unique_values = np.arange(low, high + step, step)
+                use_discrete_colors = True
+                value_to_color_idx = {val: idx for idx, val in enumerate(unique_values)}
+                attr_norm = plt.Normalize(0, len(unique_values) - 1)
+            else:
+                # Auto-detect binning
+                attr_min, attr_max = attr_values.min(), attr_values.max()
+                # For photon/event IDs, use discrete colors if there are few unique values
+                unique_values = attr_values.unique()
+                if color_by in ['photon', 'photons', 'event', 'events'] and len(unique_values) <= 20:
+                    # Use discrete colormap for categorical data
+                    use_discrete_colors = True
+                    value_to_color_idx = {val: idx for idx, val in enumerate(sorted(unique_values))}
+                    attr_norm = plt.Normalize(0, len(unique_values) - 1)
+                else:
+                    # Use continuous colormap
+                    use_discrete_colors = False
+                    attr_norm = plt.Normalize(attr_min, attr_max)
+            # We'll apply colors per-cluster based on actual attribute values
         else:
-            use_tot_coloring = False  # Fall back to TOA if no TOT data
+            use_attribute_coloring = False  # Fall back to TOA if no data
 
     # Apply cmap to face colors if provided (for TOA mode)
-    if not use_tot_coloring:
+    if not use_attribute_coloring:
         if cmap and len(time_bins_list) > 1:
             norm = plt.Normalize(min(tb['time'] for tb in time_bins_list), max(tb['time'] for tb in time_bins_list))
             for i, bin_info in enumerate(time_bins_list):
                 rgba = plt.cm.get_cmap(cmap)(norm(bin_info['time']))
                 bin_info['face_color'] = rgba[:3]  # Use RGB only, alpha handled separately
-        elif custom_color:
-            # Deprecation warning for custom_color
-            import warnings
-            warnings.warn("The 'custom_color' parameter is deprecated. Use 'cmap' instead.", DeprecationWarning)
-            for bin_info in time_bins_list:
-                bin_info['face_color'] = custom_color
 
     # Collect legend handles
     legend_patches = []
+    legend_labels = []
+    attr_value_to_patch = {}  # Track attribute values and their colors for legend
+    has_non_associated = False  # Track if we have non-associated pixels
+
     for i, bin_info in enumerate(time_bins_list):
         hist_data = h[keys[start_key_idx + i]] if start_key_idx + i < len(keys) else np.zeros_like(h[keys[0]])
         zoom_hist = hist_data[y_min:y_max, x_min:x_max]
@@ -393,34 +419,60 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
             if not envelope_points or len(envelope_points) < 3:
                 envelope_points = create_grid_envelope(cluster)
 
-            # Initialize variables for TOT tracking
-            cluster_tots = []
-            mean_tot = 0
+            # Initialize variables for attribute tracking
+            cluster_values = []
+            mean_value = 0
+            most_common_value = 0
 
             if envelope_points and len(envelope_points) >= 3:
-                # Determine color based on TOA or TOT
-                if use_tot_coloring:
-                    # Get TOT values for pixels in this cluster
+                # Determine color based on TOA or attribute (tot, photon, event)
+                if use_attribute_coloring:
+                    # Get attribute values for pixels in this cluster
                     for x, y in cluster:
                         # Find pixels in dataframe matching this position
                         # Round to integer pixel coordinates
-                        pixel_mask = (df['x'].round().astype(int) == int(x)) & (df['y'].round().astype(int) == int(y))
-                        pixel_tots = df.loc[pixel_mask, 'tot'].dropna()
-                        if len(pixel_tots) > 0:
-                            cluster_tots.extend(pixel_tots.tolist())
+                        pixel_mask = (df[x_col].round().astype(int) == int(x)) & (df[y_col].round().astype(int) == int(y))
+                        pixel_attr = df.loc[pixel_mask, color_column].dropna()
+                        if len(pixel_attr) > 0:
+                            cluster_values.extend(pixel_attr.tolist())
 
-                    if len(cluster_tots) > 0:
-                        # Use mean TOT for this cluster
-                        mean_tot = np.mean(cluster_tots)
-                        if cmap:
-                            rgba = plt.cm.get_cmap(cmap)(tot_norm(mean_tot))
-                            face_color = rgba[:3]
+                    if len(cluster_values) > 0:
+                        # For discrete colors (photon/event IDs), use mode; otherwise use mean
+                        if use_discrete_colors:
+                            # Use most common value in cluster
+                            from collections import Counter
+                            most_common_value = Counter(cluster_values).most_common(1)[0][0]
+                            color_idx = value_to_color_idx[most_common_value]
+                            if cmap:
+                                rgba = plt.cm.get_cmap(cmap)(attr_norm(color_idx))
+                                face_color = rgba[:3]
+                                # Track this value for legend
+                                if most_common_value not in attr_value_to_patch:
+                                    attr_value_to_patch[most_common_value] = face_color
+                            else:
+                                face_color = str(attr_norm(color_idx))
+                                # Track for legend (grayscale)
+                                if most_common_value not in attr_value_to_patch:
+                                    attr_value_to_patch[most_common_value] = face_color
                         else:
-                            # Grayscale based on TOT
-                            face_color = str(tot_norm(mean_tot))
+                            # Use mean for continuous values
+                            mean_value = np.mean(cluster_values)
+                            if cmap:
+                                rgba = plt.cm.get_cmap(cmap)(attr_norm(mean_value))
+                                face_color = rgba[:3]
+                                # Track for legend
+                                if mean_value not in attr_value_to_patch:
+                                    attr_value_to_patch[mean_value] = face_color
+                            else:
+                                # Grayscale based on attribute
+                                face_color = str(attr_norm(mean_value))
+                                if mean_value not in attr_value_to_patch:
+                                    attr_value_to_patch[mean_value] = face_color
                     else:
-                        # No TOT data, use default
-                        face_color = bin_info['face_color']
+                        # No attribute data - non-associated pixel
+                        # Use gray color to indicate not associated
+                        face_color = (0.7, 0.7, 0.7)  # Gray
+                        has_non_associated = True
                 else:
                     # Use TOA-based color
                     face_color = bin_info['face_color']
@@ -433,9 +485,14 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
                 ax.add_patch(polygon)
 
             if show_labels:
-                # Label shows TOT value if using TOT coloring, otherwise time
-                if use_tot_coloring and len(cluster_tots) > 0:
-                    label_text = f"{mean_tot:.0f}"
+                # Label shows attribute value if using attribute coloring, otherwise time
+                if use_attribute_coloring and len(cluster_values) > 0:
+                    if use_discrete_colors:
+                        # Show the most common value for discrete colors
+                        label_text = f"{most_common_value:.0f}"
+                    else:
+                        # Show mean value for continuous colors
+                        label_text = f"{mean_value:.0f}"
                 else:
                     label_text = str(bin_info['time'])
 
@@ -460,9 +517,47 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
         ax.set_xlabel("Pixels from Center")
 
     # Add legend if requested
-    if show_legend and legend_patches:
-        ax.legend(legend_patches, [str(tb['time']) + ' ns' for tb in time_bins_list],
-                 loc='upper left', bbox_to_anchor=(1.05, 1), borderaxespad=0.)
+    if show_legend:
+        if use_attribute_coloring and (attr_value_to_patch or has_non_associated):
+            # Create legend with attribute values
+            sorted_values = sorted(attr_value_to_patch.keys()) if attr_value_to_patch else []
+            legend_patches = [plt.Rectangle((0, 0), 1, 1, fc=attr_value_to_patch[val]) for val in sorted_values]
+
+            # Determine legend title based on color_by
+            if color_by in ['photon', 'photons']:
+                legend_title = 'Photon ID'
+                legend_labels = [f'Photon {int(val)}' for val in sorted_values]
+            elif color_by in ['event', 'events']:
+                legend_title = 'Event ID'
+                legend_labels = [f'Event {int(val)}' for val in sorted_values]
+            elif color_by == 'tot':
+                legend_title = 'TOT (ns)'
+                legend_labels = [f'{val:.1f}' for val in sorted_values]
+            else:
+                # Custom column - use column name as title
+                legend_title = color_by
+                # Format based on data type
+                if len(sorted_values) > 0:
+                    if isinstance(sorted_values[0], (int, np.integer)):
+                        legend_labels = [f'{int(val)}' for val in sorted_values]
+                    else:
+                        legend_labels = [f'{val:.2f}' for val in sorted_values]
+                else:
+                    legend_labels = []
+
+            # Add "Not associated" entry if we have non-associated pixels
+            if has_non_associated:
+                legend_patches.append(plt.Rectangle((0, 0), 1, 1, fc=(0.7, 0.7, 0.7)))
+                legend_labels.append('Not associated')
+
+            ax.legend(legend_patches, legend_labels,
+                     title=legend_title,
+                     loc='upper left', bbox_to_anchor=(1.05, 1), borderaxespad=0.)
+        elif legend_patches:
+            # Original time-based legend
+            ax.legend(legend_patches, [str(tb['time']) + ' ns' for tb in time_bins_list],
+                     title='Time (ns)',
+                     loc='upper left', bbox_to_anchor=(1.05, 1), borderaxespad=0.)
 
     ax.set_aspect('equal')
     plt.subplots_adjust(left=0, right=1, top=1, bottom=0)
