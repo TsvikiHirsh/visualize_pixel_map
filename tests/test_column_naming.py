@@ -40,7 +40,7 @@ class TestColumnNaming:
 
         Args:
             filepath: Path to save CSV file
-            separator: Either '_' for underscore or '\\' for backslash
+            separator: Either '_' for underscore, '\\' for backslash, or '/' for forward slash
         """
         if separator == '\\':
             data = {
@@ -51,6 +51,16 @@ class TestColumnNaming:
                 'px\\tof': np.random.uniform(0, 0.01, 100),
                 'ph\\id': np.random.randint(0, 10, 100),
                 'ev\\id': np.random.randint(0, 5, 100)
+            }
+        elif separator == '/':
+            data = {
+                'px/x': np.random.randint(0, 256, 100),
+                'px/y': np.random.randint(0, 256, 100),
+                'px/toa': np.random.uniform(0, 0.01, 100),
+                'px/tot': np.random.randint(10, 100, 100),
+                'px/tof': np.random.uniform(0, 0.01, 100),
+                'ph/id': np.random.randint(0, 10, 100),
+                'ev/id': np.random.randint(0, 5, 100)
             }
         else:
             data = {
@@ -152,6 +162,36 @@ class TestColumnNaming:
             assert data.photons['count'] > 0
             assert data.events['count'] > 0
 
+    def test_new_column_naming_forward_slash(self):
+        """Test that new column naming (prefix-based with forward slash) is correctly detected and preserved."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "data_new_forward_slash.csv"
+            self.create_new_format_csv(csv_path, separator='/')
+
+            # Load data
+            data = Data(str(csv_path), verbosity=0)
+
+            # Check that px/* columns are PRESERVED (not renamed)
+            assert 'px/x' in data.df.columns
+            assert 'px/y' in data.df.columns
+            assert 'px/toa' in data.df.columns
+            assert 'px/tot' in data.df.columns
+
+            # Check that ph/id and ev/id are present
+            assert 'ph/id' in data.df.columns or 'assoc_photon_id' in data.df.columns
+            assert 'ev/id' in data.df.columns or 'assoc_event_id' in data.df.columns
+
+            # Check that association columns are detected
+            assert data.has_photon_id
+            assert data.has_event_id
+            assert data.has_tot
+
+            # Check that properties work with new naming
+            assert data.photons is not None
+            assert data.events is not None
+            assert data.photons['count'] > 0
+            assert data.events['count'] > 0
+
     def test_get_column_name_helper(self):
         """Test the _get_column_name helper method."""
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -184,6 +224,16 @@ class TestColumnNaming:
             assert data_backslash._get_column_name('photon_id') in ['ph\\id', 'ph_id', 'assoc_photon_id']
             assert data_backslash._get_column_name('event_id') in ['ev\\id', 'ev_id', 'assoc_event_id']
             assert data_backslash._get_column_name('tot') in ['tot', 'px\\tot', 'px_tot']
+
+            # Test with new naming (forward slash)
+            csv_forward = Path(tmpdir) / "forward_slash.csv"
+            self.create_new_format_csv(csv_forward, separator='/')
+            data_forward = Data(str(csv_forward), verbosity=0)
+
+            # Should find forward slash column names
+            assert data_forward._get_column_name('photon_id') in ['ph/id', 'ph\\id', 'ph_id', 'assoc_photon_id']
+            assert data_forward._get_column_name('event_id') in ['ev/id', 'ev\\id', 'ev_id', 'assoc_event_id']
+            assert data_forward._get_column_name('tot') in ['px/tot', 'tot', 'px\\tot', 'px_tot']
 
 
 class TestMultipleCSVLoading:
@@ -334,6 +384,32 @@ class TestFilteringWithNewColumns:
                 'px\\tof': np.random.uniform(0, 0.01, 100),
                 'ph\\id': [i // 10 for i in range(100)],  # 10 photons
                 'ev\\id': [i // 20 for i in range(100)]   # 5 events
+            }
+            df = pd.DataFrame(data)
+            df.to_csv(csv_path, index=False)
+
+            data_obj = Data(str(csv_path), verbosity=0)
+
+            # Filter by photons
+            filtered_df = data_obj._apply_filters(photons=(0, 3), verbosity=0)
+
+            # Should only have data from first 3 photons
+            photon_col = data_obj._get_column_name('photon_id')
+            unique_photons = filtered_df[photon_col].unique()
+            assert len(unique_photons) == 3
+
+    def test_filter_photons_new_naming_forward_slash(self):
+        """Test filtering by photons with new column naming (forward slash)."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            csv_path = Path(tmpdir) / "data.csv"
+            data = {
+                'px/x': np.random.randint(0, 256, 100),
+                'px/y': np.random.randint(0, 256, 100),
+                'px/toa': np.random.uniform(0, 0.01, 100),
+                'px/tot': np.random.randint(10, 100, 100),
+                'px/tof': np.random.uniform(0, 0.01, 100),
+                'ph/id': [i // 10 for i in range(100)],  # 10 photons
+                'ev/id': [i // 20 for i in range(100)]   # 5 events
             }
             df = pd.DataFrame(data)
             df.to_csv(csv_path, index=False)

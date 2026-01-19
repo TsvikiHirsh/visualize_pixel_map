@@ -62,11 +62,12 @@ class Data:
         self.neutron_id = neutron_id
         self.has_neutron_id = 'neutron_id' in self.df.columns
         # Support both old and new column naming conventions
-        # New format uses backslash: ph\id, ev\id, px\tot
+        # New format uses forward slash: ph/id, ev/id, px/tot
+        # Or backslash: ph\id, ev\id, px\tot
         # Or underscore: ph_id, ev_id, px_tot
-        self.has_photon_id = ('ph\\id' in self.df.columns or 'ph_id' in self.df.columns or 'assoc_photon_id' in self.df.columns)
-        self.has_event_id = ('ev\\id' in self.df.columns or 'ev_id' in self.df.columns or 'assoc_event_id' in self.df.columns)
-        self.has_tot = ('px\\tot' in self.df.columns or 'px_tot' in self.df.columns or 'tot' in self.df.columns)
+        self.has_photon_id = ('ph/id' in self.df.columns or 'ph\\id' in self.df.columns or 'ph_id' in self.df.columns or 'assoc_photon_id' in self.df.columns)
+        self.has_event_id = ('ev/id' in self.df.columns or 'ev\\id' in self.df.columns or 'ev_id' in self.df.columns or 'assoc_event_id' in self.df.columns)
+        self.has_tot = ('px/tot' in self.df.columns or 'px\\tot' in self.df.columns or 'px_tot' in self.df.columns or 'tot' in self.df.columns)
 
         if self.verbosity >= 1:
             print(f"Loaded {len(self.df)} rows")
@@ -249,22 +250,40 @@ class Data:
     def _normalize_columns(self, sensor_size=8):
         r"""
         Detect the format and handle column naming.
-        Supports five formats:
+        Supports six formats:
         1. Original format: x, y, toa, tof
         2. Alternative format: x2, y2, z2, id, neutron_id, toa2, photon_count, time_diff
         3. AssociatedResults format (old): x, y, t, tot, tof, assoc_photon_id, assoc_event_id, etc.
         4. AssociatedResults format (new underscore): px_x, px_y, px_toa, px_tot, ph_id, ev_id, etc.
         5. AssociatedResults format (new backslash): px\x, px\y, px\toa, px\tot, ph\id, ev\id, etc.
+        6. AssociatedResults format (new forward slash): px/x, px/y, px/toa, px/tot, ph/id, ev/id, etc.
 
-        NEW: Preserves original column names (px\x, px_x, etc.) instead of renaming.
+        NEW: Preserves original column names (px/x, px\x, px_x, etc.) instead of renaming.
 
         Parameters:
             sensor_size (float): Size of the sensor in mm (used for normalization).
         """
         columns = self.df.columns.tolist()
 
+        # Check for NEW AssociatedResults format with forward slash separator (px/*, ph/*, ev/*)
+        if any(col.startswith('px/') for col in columns):
+            # New format with forward slash - KEEP original column names
+            # Ensure tof exists (duplicate toa if not)
+            toa_col = self._get_column_name('toa')
+            tof_col = self._get_column_name('tof')
+
+            if tof_col is None and toa_col is not None:
+                # Create tof column as duplicate of toa with same naming convention
+                if 'px/toa' in columns:
+                    self.df['px/tof'] = self.df['px/toa']
+
+            # Filter out rows with invalid time
+            if toa_col is not None:
+                self.df = self.df.loc[(self.df[toa_col] >= 0)]
+                self.df = self.df.sort_values(by=toa_col)
+
         # Check for NEW AssociatedResults format with backslash separator (px\*, ph\*, ev\*)
-        if any(col.startswith('px\\') for col in columns):
+        elif any(col.startswith('px\\') for col in columns):
             # New format with backslash - KEEP original column names
             # Ensure tof exists (duplicate toa if not)
             toa_col = self._get_column_name('toa')
@@ -375,13 +394,13 @@ class Data:
             str or None: The actual column name in the dataframe, or None if not found.
         """
         mapping = {
-            'x': ['px\\x', 'px_x', 'x', 'x2'],
-            'y': ['px\\y', 'px_y', 'y', 'y2'],
-            'toa': ['px\\toa', 'px_toa', 'toa', 'toa2', 't'],
-            'tof': ['px\\tof', 'px_tof', 'tof'],
-            'tot': ['px\\tot', 'px_tot', 'tot'],
-            'photon_id': ['ph\\id', 'ph_id', 'assoc_photon_id'],
-            'event_id': ['ev\\id', 'ev_id', 'assoc_event_id']
+            'x': ['px/x', 'px\\x', 'px_x', 'x', 'x2'],
+            'y': ['px/y', 'px\\y', 'px_y', 'y', 'y2'],
+            'toa': ['px/toa', 'px\\toa', 'px_toa', 'toa', 'toa2', 't'],
+            'tof': ['px/tof', 'px\\tof', 'px_tof', 'tof'],
+            'tot': ['px/tot', 'px\\tot', 'px_tot', 'tot'],
+            'photon_id': ['ph/id', 'ph\\id', 'ph_id', 'assoc_photon_id'],
+            'event_id': ['ev/id', 'ev\\id', 'ev_id', 'assoc_event_id']
         }
 
         for col in mapping.get(column_type, []):
