@@ -299,12 +299,17 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
     """
     fig, ax = plt.subplots(figsize=(4, 4))
     
-    # Control spine visibility based on despine parameter
-    if despine and not show_scale:
+    # Control spine visibility based on despine and show_scale parameters
+    # show_scale takes precedence - if True, always show spines and ticks
+    if show_scale:
+        # Keep spines visible for scale display
+        pass
+    elif despine:
+        # Hide spines if despine=True and show_scale=False
         for spine in ax.spines.values():
             spine.set_visible(False)
-    ax.set_xticks([])
-    ax.set_yticks([])
+        ax.set_xticks([])
+        ax.set_yticks([])
     
     fig.patch.set_facecolor('white')
     ax.set_facecolor('white')
@@ -405,8 +410,10 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
 
     for i, bin_info in enumerate(time_bins_list):
         hist_data = h[keys[start_key_idx + i]] if start_key_idx + i < len(keys) else np.zeros_like(h[keys[0]])
-        zoom_hist = hist_data[y_min:y_max, x_min:x_max]
-        y_indices, x_indices = np.where(zoom_hist > 0)
+        # np.histogram2d returns H where H[x_bin, y_bin] is the count
+        # So we slice [x_min:x_max, y_min:y_max] to get the zoom region
+        zoom_hist = hist_data[x_min:x_max, y_min:y_max]
+        x_indices, y_indices = np.where(zoom_hist > 0)
 
         if len(x_indices) == 0:
             continue
@@ -509,12 +516,16 @@ def plot_time_development(h, keys, start_key_idx=800, zoom_region=None, zoom_siz
             legend_patches.append(legend_patch)
 
     # Add scale if requested
-    if show_scale and not despine:
+    if show_scale:
         ax.spines['bottom'].set_visible(True)
+        ax.spines['left'].set_visible(True)
         pixel_range = int(x_max - x_min)
         ax.set_xticks([x_min, x_max])
-        ax.set_xticklabels([f"-{pixel_range//2}", f"{pixel_range//2}"])
-        ax.set_xlabel("Pixels from Center")
+        ax.set_xticklabels([f"{int(x_min)}", f"{int(x_max)}"])
+        ax.set_yticks([y_min, y_max])
+        ax.set_yticklabels([f"{int(y_min)}", f"{int(y_max)}"])
+        ax.set_xlabel("X (pixels)")
+        ax.set_ylabel("Y (pixels)")
 
     # Add legend if requested
     if show_legend:
